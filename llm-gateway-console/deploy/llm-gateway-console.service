@@ -5,9 +5,9 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/llm-router-panel/llm-gateway-console/backend
-EnvironmentFile=/opt/llm-router-panel/llm-gateway-console/backend/.env
-ExecStart=/opt/llm-router-panel/llm-gateway-console/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8010
+WorkingDirectory=/var/www/llm-gateway-console/backend
+EnvironmentFile=/var/www/llm-gateway-console/backend/.env
+ExecStart=/var/www/llm-gateway-console/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8010
 Restart=always
 RestartSec=5
 

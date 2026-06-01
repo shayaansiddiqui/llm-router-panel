@@ -141,7 +141,7 @@ LLM_GATEWAY_PROVIDER_TIMEOUT_SECONDS
 Optional GitHub repository variables:
 
 ```text
-LLM_GATEWAY_DEPLOY_PATH=/opt/llm-router-panel/llm-gateway-console
+LLM_GATEWAY_DEPLOY_PATH=/var/www/llm-gateway-console
 LLM_GATEWAY_SERVICE_NAME=llm-gateway-console
 LLM_GATEWAY_SERVICE_PORT=8010
 VITE_PUBLIC_GATEWAY_URL=https://ai.gettingstarted.app
@@ -153,7 +153,7 @@ The workflow creates or updates the systemd service automatically. A matching sa
 deploy/llm-gateway-console.service
 ```
 
-On the current shared server, port `8000` is already used by another app. The gateway service defaults to `127.0.0.1:8010`.
+On the current shared server, port `8000` is already used by another app. The gateway deploys to `/var/www/llm-gateway-console` and defaults to `127.0.0.1:8010`.
 
 Nginx should proxy the public domain to that port. A sample vhost is available at:
 
