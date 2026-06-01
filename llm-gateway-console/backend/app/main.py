@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import fnmatch
+import json
 import secrets
 import time
 from pathlib import Path
@@ -10,12 +13,13 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .database import fetch_all, fetch_one, get_db, init_db, utc_now
 from .schemas import (
+    AdminLoginIn,
     ApiKeyIn,
     ModelIn,
     ProviderIn,
@@ -35,6 +39,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/assets", StaticFiles(directory=ASSETS_DIR, check_dir=False), name="frontend-assets")
+
+
+@app.middleware("http")
+async def protect_admin_api(request: Request, call_next):
+    path = request.url.path
+    if request.method == "OPTIONS" or not path.startswith("/api/") or path == "/api/auth/login":
+        return await call_next(request)
+
+    token = bearer_token(request)
+    if not token or not verify_admin_token(token):
+        return JSONResponse(status_code=401, content={"detail": "Admin authentication required."})
+    return await call_next(request)
 
 
 @app.on_event("startup")
@@ -63,6 +79,54 @@ def bearer_token(request: Request) -> str | None:
     if not authorization.lower().startswith("bearer "):
         return None
     return authorization.split(" ", 1)[1].strip()
+
+
+def b64url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("utf-8").rstrip("=")
+
+
+def b64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(f"{value}{padding}")
+
+
+def sign_admin_payload(payload_part: str) -> str:
+    signature = hmac.new(
+        settings.admin_session_secret.encode("utf-8"),
+        payload_part.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return b64url_encode(signature)
+
+
+def create_admin_token(username: str) -> str:
+    payload = {
+        "sub": username,
+        "exp": int(time.time()) + settings.admin_session_ttl_seconds,
+    }
+    payload_part = b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    return f"{payload_part}.{sign_admin_payload(payload_part)}"
+
+
+def verify_admin_token(token: str) -> dict[str, Any] | None:
+    try:
+        payload_part, signature_part = token.split(".", 1)
+        expected_signature = sign_admin_payload(payload_part)
+        if not secrets.compare_digest(signature_part, expected_signature):
+            return None
+        payload = json.loads(b64url_decode(payload_part))
+    except Exception:
+        return None
+
+    if payload.get("exp", 0) < int(time.time()):
+        return None
+    if payload.get("sub") != settings.admin_username:
+        return None
+    return payload
+
+
+def verify_admin_credentials(username: str, password: str) -> bool:
+    return secrets.compare_digest(username, settings.admin_username) and secrets.compare_digest(password, settings.admin_password)
 
 
 def api_key_count() -> int:
@@ -592,6 +656,32 @@ async def chat_completions(request: Request) -> Any:
             )
 
     raise HTTPException(status_code=502, detail=f"All providers failed. Last error: {last_error}")
+
+
+@app.post("/api/auth/login")
+def admin_login(credentials: AdminLoginIn) -> dict[str, Any]:
+    if not verify_admin_credentials(credentials.username, credentials.password):
+        raise HTTPException(status_code=401, detail="Invalid admin credentials.")
+    return {
+        "token": create_admin_token(settings.admin_username),
+        "token_type": "bearer",
+        "expires_in": settings.admin_session_ttl_seconds,
+        "username": settings.admin_username,
+    }
+
+
+@app.get("/api/auth/me")
+def admin_me(request: Request) -> dict[str, str]:
+    token = bearer_token(request)
+    payload = verify_admin_token(token or "")
+    if not payload:
+        raise HTTPException(status_code=401, detail="Admin authentication required.")
+    return {"username": str(payload["sub"])}
+
+
+@app.post("/api/auth/logout")
+def admin_logout() -> dict[str, bool]:
+    return {"ok": True}
 
 
 @app.get("/api/dashboard")

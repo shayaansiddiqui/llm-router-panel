@@ -80,13 +80,16 @@ jobs:
           SERVICE_PORT: ${{ env.SERVICE_PORT }}
           DATABASE_PATH: ${{ secrets.LLM_GATEWAY_DATABASE_PATH }}
           ADMIN_CORS_ORIGINS: ${{ secrets.LLM_GATEWAY_ADMIN_CORS_ORIGINS }}
+          ADMIN_USERNAME: ${{ secrets.LLM_GATEWAY_ADMIN_USERNAME }}
+          ADMIN_PASSWORD: ${{ secrets.LLM_GATEWAY_ADMIN_PASSWORD }}
+          ADMIN_SESSION_SECRET: ${{ secrets.LLM_GATEWAY_ADMIN_SESSION_SECRET }}
           PROVIDER_REQUEST_TIMEOUT_SECONDS: ${{ secrets.LLM_GATEWAY_PROVIDER_TIMEOUT_SECONDS }}
         with:
           host: ${{ env.SERVER_HOST }}
           username: ${{ env.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: ${{ env.SERVER_PORT }}
-          envs: DEPLOY_PATH,SERVICE_NAME,SERVICE_PORT,DATABASE_PATH,ADMIN_CORS_ORIGINS,PROVIDER_REQUEST_TIMEOUT_SECONDS
+          envs: DEPLOY_PATH,SERVICE_NAME,SERVICE_PORT,DATABASE_PATH,ADMIN_CORS_ORIGINS,ADMIN_USERNAME,ADMIN_PASSWORD,ADMIN_SESSION_SECRET,PROVIDER_REQUEST_TIMEOUT_SECONDS
           script: |
             set -e
 
@@ -94,6 +97,11 @@ jobs:
             rm -rf "$RELEASE_DIR"
             mkdir -p "$RELEASE_DIR" "$DEPLOY_PATH"
             tar -xzf /tmp/llm-gateway-console.tar.gz -C "$RELEASE_DIR"
+
+            if [ -z "$ADMIN_PASSWORD" ]; then
+              echo "LLM_GATEWAY_ADMIN_PASSWORD secret is required."
+              exit 1
+            fi
 
             find "$DEPLOY_PATH" -mindepth 1 -maxdepth 1 ! -name backend -exec rm -rf {} +
             mkdir -p "$DEPLOY_PATH/backend"
@@ -105,9 +113,30 @@ jobs:
               cat > "$DEPLOY_PATH/backend/.env" <<EOF
             DATABASE_PATH=${DATABASE_PATH:-./data/llm_gateway.db}
             ADMIN_CORS_ORIGINS=${ADMIN_CORS_ORIGINS:-https://ai.gettingstarted.app}
+            ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+            ADMIN_PASSWORD=${ADMIN_PASSWORD}
+            ADMIN_SESSION_SECRET=${ADMIN_SESSION_SECRET:-$(openssl rand -hex 32)}
             PROVIDER_REQUEST_TIMEOUT_SECONDS=${PROVIDER_REQUEST_TIMEOUT_SECONDS:-60}
             EOF
               chmod 600 "$DEPLOY_PATH/backend/.env"
+            fi
+
+            set_env_value() {
+              key="$1"
+              value="$2"
+              if grep -q "^${key}=" "$DEPLOY_PATH/backend/.env"; then
+                sed -i "s|^${key}=.*|${key}=${value}|" "$DEPLOY_PATH/backend/.env"
+              else
+                echo "${key}=${value}" >> "$DEPLOY_PATH/backend/.env"
+              fi
+            }
+
+            set_env_value ADMIN_USERNAME "${ADMIN_USERNAME:-admin}"
+            set_env_value ADMIN_PASSWORD "$ADMIN_PASSWORD"
+            if [ -n "$ADMIN_SESSION_SECRET" ]; then
+              set_env_value ADMIN_SESSION_SECRET "$ADMIN_SESSION_SECRET"
+            elif ! grep -q '^ADMIN_SESSION_SECRET=' "$DEPLOY_PATH/backend/.env"; then
+              set_env_value ADMIN_SESSION_SECRET "$(openssl rand -hex 32)"
             fi
 
             cd "$DEPLOY_PATH/backend"

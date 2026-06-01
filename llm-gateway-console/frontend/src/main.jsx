@@ -9,6 +9,7 @@ import {
   KeyRound,
   ListChecks,
   Loader2,
+  LogOut,
   Network,
   Plus,
   RefreshCw,
@@ -25,7 +26,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { APIKeys } from '@/pages/APIKeys';
 import { APIDocs } from '@/pages/APIDocs';
-import { API_BASE_URL, PUBLIC_GATEWAY_URL, api } from '@/lib/api';
+import { Login } from '@/pages/Login';
+import { API_BASE_URL, PUBLIC_GATEWAY_URL, api, clearAdminToken, getAdminToken } from '@/lib/api';
 import { cn } from './lib/utils';
 
 const pages = [
@@ -299,7 +301,7 @@ function LogTable({ logs }) {
   );
 }
 
-function App() {
+function AdminConsole({ onLogout }) {
   const [page, setPage] = useState('Dashboard');
   const [providers, setProviders] = useState([]);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -357,6 +359,7 @@ function App() {
             <div className="flex flex-wrap items-center gap-2">
               <Badge active={providers.some((provider) => provider.is_active)} label={`${providers.filter((provider) => provider.is_active).length} active`} />
               <Button variant="outline" onClick={refresh}><RefreshCw className="h-4 w-4" />Refresh</Button>
+              <Button variant="ghost" onClick={onLogout}><LogOut className="h-4 w-4" />Logout</Button>
             </div>
           </div>
           <nav className="flex gap-1 overflow-x-auto border-t px-4 py-2 lg:hidden">
@@ -380,6 +383,36 @@ function App() {
       </div>
     </div>
   );
+}
+
+function App() {
+  const [authState, setAuthState] = useState(getAdminToken() ? 'checking' : 'login');
+
+  useEffect(() => {
+    if (authState !== 'checking') return;
+    api('/api/auth/me')
+      .then(() => setAuthState('authenticated'))
+      .catch(() => {
+        clearAdminToken();
+        setAuthState('login');
+      });
+  }, [authState]);
+
+  function logout() {
+    api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    clearAdminToken();
+    setAuthState('login');
+  }
+
+  if (authState === 'checking') {
+    return <Loading label="Checking admin session" />;
+  }
+
+  if (authState !== 'authenticated') {
+    return <Login onLogin={() => setAuthState('authenticated')} />;
+  }
+
+  return <AdminConsole onLogout={logout} />;
 }
 
 createRoot(document.getElementById('root')).render(<App />);

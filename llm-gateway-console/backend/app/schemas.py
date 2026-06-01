@@ -52,6 +52,11 @@ class ApiKeyIn(BaseModel):
     is_active: bool = True
 
 
+class AdminLoginIn(BaseModel):
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+
 class RequestLogOut(BaseModel):
     id: int
     requested_model: str | None

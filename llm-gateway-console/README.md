@@ -98,6 +98,10 @@ Create `backend/.env` from `backend/.env.example`.
 APP_NAME=LLM Gateway Console
 DATABASE_PATH=./data/llm_gateway.db
 ADMIN_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=change-this-password
+ADMIN_SESSION_SECRET=change-this-session-secret
+ADMIN_SESSION_TTL_SECONDS=43200
 PROVIDER_REQUEST_TIMEOUT_SECONDS=60
 ```
 
@@ -116,10 +120,11 @@ On push to `main`, it:
 5. Installs backend Python dependencies.
 6. Restarts the systemd service.
 
-Required GitHub secret:
+Required GitHub secrets:
 
 ```text
 SERVER_SSH_KEY
+LLM_GATEWAY_ADMIN_PASSWORD
 ```
 
 The workflow already contains:
@@ -135,8 +140,12 @@ Optional GitHub secrets:
 ```text
 LLM_GATEWAY_DATABASE_PATH
 LLM_GATEWAY_ADMIN_CORS_ORIGINS
+LLM_GATEWAY_ADMIN_USERNAME
+LLM_GATEWAY_ADMIN_SESSION_SECRET
 LLM_GATEWAY_PROVIDER_TIMEOUT_SECONDS
 ```
+
+Set `LLM_GATEWAY_ADMIN_PASSWORD` before deploying publicly. The default admin username is `admin` unless `LLM_GATEWAY_ADMIN_USERNAME` is set.
 
 Optional GitHub repository variables:
 
