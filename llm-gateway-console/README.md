@@ -1,205 +1,233 @@
-# llm-gateway-console
+# LLM Gateway Console
 
-A simple MVP foundation for a lightweight LLM Gateway and React admin panel.
+LLM Gateway Console is a small admin panel for managing one public LLM gateway.
 
-The gateway exposes an OpenAI-compatible endpoint:
+Client applications call one stable API domain:
 
 ```text
-POST /v1/chat/completions
+https://ai.gettingstarted.app
 ```
 
-Client apps can call a central domain such as:
+The gateway then decides which LLM provider should handle the request.
+
+```text
+Client App
+  -> LLM Gateway
+  -> Selected Provider
+  -> LLM Backend
+  -> Response back to Client App
+```
+
+The gateway does not run models. It only receives requests, checks access, selects a provider, forwards the request, and logs the result.
+
+## Main Idea
+
+Instead of every app calling different LLM backends directly, all apps call the gateway.
+
+Example provider backends:
+
+```text
+olares      -> https://ai-1.gettingstarted.app
+mac-studio  -> https://ai-2.gettingstarted.app
+```
+
+Client apps only need to know:
 
 ```text
 https://ai.gettingstarted.app/v1/chat/completions
 ```
 
-The FastAPI gateway selects an active provider by priority, forwards the request to that provider's OpenAI-compatible backend, and tries the next active provider if a provider fails or times out.
+## Request Flow
 
-Example provider endpoints:
+When a client sends a chat request:
+
+1. The gateway receives the request.
+2. The gateway checks the client API key.
+3. The gateway checks which providers and models that key can use.
+4. The gateway reads the requested model.
+5. If the request includes a provider name, that provider is used.
+6. If no provider is sent, the gateway chooses one automatically.
+7. The request is forwarded to the selected provider.
+8. The provider response is returned to the client.
+9. A request log is saved.
+
+## Automatic Routing
+
+If the client does not send `provider`, the gateway chooses the provider.
+
+Example:
+
+```json
+{
+  "model": "qwen2.5-coder:32b-instruct-q8_0",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Write a short welcome message."
+    }
+  ],
+  "temperature": 0.7
+}
+```
+
+Automatic routing uses:
+
+- active/passive provider status
+- API key permissions
+- requested model
+- provider priority
+- provider timeout/failure handling
+
+Lower priority numbers run first. Priority `1` is tried before priority `2`.
+
+If the first provider fails or times out, the gateway can try the next valid provider.
+
+## Targeted Provider Routing
+
+If the client sends `provider`, the gateway targets that provider by name.
+
+Example:
+
+```json
+{
+  "provider": "olares",
+  "model": "qwen2.5-coder:32b-instruct-q8_0",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Write a short welcome message."
+    }
+  ],
+  "temperature": 0.7
+}
+```
+
+In this mode, the gateway does not fail over to another provider. It validates the selected provider and forwards the request only there.
+
+The `provider` field is removed before forwarding, so the backend receives a normal OpenAI-compatible request.
+
+## Admin Panel Pages
+
+### Dashboard
+
+Shows a quick overview of the gateway:
+
+- number of providers
+- active providers
+- available models
+- logged requests
+- recent request activity
+
+Use it to quickly see whether the system is healthy.
+
+### Providers
+
+Used to manage LLM backends.
+
+Each provider has:
+
+- name
+- endpoint URL
+- optional API key
+- active/passive status
+- priority
+- timeout
+
+Providers are the real backends behind the gateway.
+
+### Models
+
+Shows models imported from providers.
+
+Example:
 
 ```text
-https://ai-1.gettingstarted.app
-https://ai-2.gettingstarted.app
+qwen2.5-coder:32b-instruct-q8_0 -> olares
+qwen3.6:35b                     -> olares
 ```
 
-If a provider endpoint is saved as `https://ai-1.gettingstarted.app`, the gateway forwards chat completions to `https://ai-1.gettingstarted.app/v1/chat/completions`.
+Clients request models by name. The gateway uses this model name to find a compatible provider.
 
-## Stack
+### API Keys
 
-- Backend: FastAPI
-- Frontend: React + Vite
-- Storage: SQLite
+Used to create client keys for apps and services.
 
-## Project Structure
+Each API key can allow:
+
+- all providers and all models
+- selected providers
+- selected models under selected providers
+
+This makes it possible to give different apps different access levels.
+
+### API Docs
+
+Shows developers how to call the gateway.
+
+It includes:
+
+- public endpoint
+- authentication format
+- request examples
+- provider/model usage
+- routing behavior
+- error examples
+
+Client apps should use the public gateway domain shown here.
+
+### Logs
+
+Shows recent request attempts.
+
+Useful for checking:
+
+- requested model
+- selected provider
+- success or failure
+- latency
+- provider errors
+
+## Public Endpoint
+
+Chat completions:
 
 ```text
-llm-gateway-console/
-  backend/
-    app/
-      main.py
-      database.py
-      config.py
-      schemas.py
-    requirements.txt
-    .env.example
-  frontend/
-    src/
-      main.jsx
-      styles.css
-    package.json
-    .env.example
+POST https://ai.gettingstarted.app/v1/chat/completions
 ```
 
-## Run Backend Locally
-
-```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-The backend will create the SQLite database at `./data/llm_gateway.db` by default.
-
-Useful backend URLs:
+Authentication:
 
 ```text
-http://localhost:8000/health
-http://localhost:8000/docs
-http://localhost:8000/v1/chat/completions
+Authorization: Bearer <API_KEY>
 ```
-
-## Run Frontend Locally
-
-```bash
-cd frontend
-npm install
-cp .env.example .env
-npm run dev
-```
-
-Open the Vite URL shown in the terminal, usually:
-
-```text
-http://localhost:5173
-```
-
-Set `VITE_API_BASE_URL` in `frontend/.env` if the admin API is not running at `http://localhost:8000`.
-Set `VITE_PUBLIC_GATEWAY_URL` to the public gateway URL shown in API Docs, for example `https://ai.gettingstarted.app`.
-
-## Backend Environment Variables
-
-Create `backend/.env` from `backend/.env.example`.
-
-```text
-APP_NAME=LLM Gateway Console
-DATABASE_PATH=./data/llm_gateway.db
-ADMIN_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=change-this-password
-ADMIN_SESSION_SECRET=change-this-session-secret
-ADMIN_SESSION_TTL_SECONDS=43200
-PROVIDER_REQUEST_TIMEOUT_SECONDS=60
-```
-
-For deployed admin panels, set `ADMIN_CORS_ORIGINS` to the frontend origin. Multiple origins can be comma-separated.
-
-## GitHub Actions Deployment
-
-The repository includes `.github/workflows/deploy-llm-gateway-console.yml`.
-
-On push to `main`, it:
-
-1. Installs frontend dependencies.
-2. Builds the React app.
-3. Copies the build into `backend/app/static`.
-4. Uploads the app archive to the server.
-5. Installs backend Python dependencies.
-6. Restarts the systemd service.
-
-Required GitHub secrets:
-
-```text
-SERVER_SSH_KEY
-LLM_GATEWAY_ADMIN_PASSWORD
-```
-
-The workflow already contains:
-
-```text
-SERVER_HOST=168.231.74.54
-SERVER_USER=root
-SERVER_PORT=22
-```
-
-Optional GitHub secrets:
-
-```text
-LLM_GATEWAY_DATABASE_PATH
-LLM_GATEWAY_ADMIN_CORS_ORIGINS
-LLM_GATEWAY_ADMIN_USERNAME
-LLM_GATEWAY_ADMIN_SESSION_SECRET
-LLM_GATEWAY_PROVIDER_TIMEOUT_SECONDS
-```
-
-Set `LLM_GATEWAY_ADMIN_PASSWORD` before deploying publicly. The default admin username is `admin` unless `LLM_GATEWAY_ADMIN_USERNAME` is set.
-
-Optional GitHub repository variables:
-
-```text
-LLM_GATEWAY_DEPLOY_PATH=/var/www/llm-gateway-console
-LLM_GATEWAY_SERVICE_NAME=llm-gateway-console
-LLM_GATEWAY_SERVICE_PORT=8010
-VITE_PUBLIC_GATEWAY_URL=https://ai.gettingstarted.app
-```
-
-The workflow creates or updates the systemd service automatically. A matching sample service file is available at:
-
-```text
-deploy/llm-gateway-console.service
-```
-
-On the current shared server, port `8000` is already used by another app. The gateway deploys to `/var/www/llm-gateway-console` and defaults to `127.0.0.1:8010`.
-
-Nginx should proxy the public domain to that port. A sample vhost is available at:
-
-```text
-deploy/nginx/ai.gettingstarted.app.conf
-```
-
-Install it on the server:
-
-```bash
-sudo cp deploy/nginx/ai.gettingstarted.app.conf /etc/nginx/sites-available/ai.gettingstarted.app
-sudo ln -s /etc/nginx/sites-available/ai.gettingstarted.app /etc/nginx/sites-enabled/ai.gettingstarted.app
-sudo nginx -t
-sudo systemctl reload nginx
-sudo certbot --nginx -d ai.gettingstarted.app
-```
-
-## First MVP Behavior
-
-- Admin panel manages providers, models, routing rules, and logs.
-- Providers include endpoint URL, optional API key, active/passive status, priority, and timeout.
-- Chat completion requests use the first matching active routing rule when possible.
-- If no rule matches, active providers are tried by priority.
-- Request attempts are logged in SQLite.
-- No authentication is included in this MVP.
 
 ## Example Request
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+curl https://ai.gettingstarted.app/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <API_KEY>" \
   -d '{
-    "model": "llama-3.1-8b",
+    "provider": "olares",
+    "model": "qwen2.5-coder:32b-instruct-q8_0",
     "messages": [
-      { "role": "user", "content": "Say hello from the gateway" }
-    ]
+      {
+        "role": "user",
+        "content": "Write a short welcome message."
+      }
+    ],
+    "temperature": 0.7
   }'
 ```
 
-Before this works, add at least one active provider in the admin panel.
+## Summary
+
+The gateway gives all client apps one stable API endpoint.
+
+Providers can change behind the scenes without changing client apps.
+
+API keys control who can use which providers and models.
+
+Logs show what happened for each request.
+
+The admin panel is only for managing the gateway; client apps should call the public API endpoint.
