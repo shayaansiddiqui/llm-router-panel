@@ -22,7 +22,7 @@ export function CopyButton({ value, label = 'Copy', variant = 'ghost', size = 's
 
 export function InlineCode({ children, className }) {
   return (
-    <code className={cn('rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground', className)}>
+    <code className={cn('rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground break-words', className)}>
       {children}
     </code>
   );
@@ -30,12 +30,12 @@ export function InlineCode({ children, className }) {
 
 export function CodeBlock({ label, value, className }) {
   return (
-    <div className={cn('overflow-hidden rounded-lg border bg-background', className)}>
-      <div className="flex items-center justify-between border-b bg-muted/50 px-3 py-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</span>
+    <div className={cn('min-w-0 max-w-full overflow-hidden rounded-lg border bg-background', className)}>
+      <div className="flex min-w-0 items-center justify-between gap-3 border-b bg-muted/50 px-3 py-2">
+        <span className="min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</span>
         <CopyButton value={value} />
       </div>
-      <pre className="max-h-[560px] overflow-auto p-4 text-sm leading-6">
+      <pre className="max-h-[560px] max-w-full overflow-x-auto overflow-y-auto p-4 text-sm leading-6">
         <code>{value}</code>
       </pre>
     </div>
@@ -44,7 +44,7 @@ export function CodeBlock({ label, value, className }) {
 
 export function DocsSection({ id, eyebrow, title, description, children }) {
   return (
-    <section id={id} className="scroll-mt-24">
+    <section id={id} className="min-w-0 scroll-mt-24">
       <div className="mb-4">
         {eyebrow && <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{eyebrow}</div>}
         <h3 className="text-2xl font-semibold tracking-tight">{title}</h3>
@@ -57,7 +57,7 @@ export function DocsSection({ id, eyebrow, title, description, children }) {
 
 export function SectionCard({ children, className }) {
   return (
-    <div className={cn('rounded-lg border bg-card p-4 shadow-sm', className)}>
+    <div className={cn('min-w-0 rounded-lg border bg-card p-4 shadow-sm', className)}>
       {children}
     </div>
   );
@@ -90,7 +90,7 @@ export function ExpandableEndpoint({ method, path, title, auth = 'Bearer key', d
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <div className="border-b last:border-b-0">
+    <div className="min-w-0 border-b last:border-b-0">
       <button
         type="button"
         className="flex w-full flex-col gap-3 px-4 py-4 text-left transition-colors hover:bg-muted/35 lg:flex-row lg:items-start lg:justify-between"
@@ -100,7 +100,7 @@ export function ExpandableEndpoint({ method, path, title, auth = 'Bearer key', d
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <MethodPill method={method} />
-            <code className="font-mono text-sm font-semibold">{path}</code>
+            <code className="break-all font-mono text-sm font-semibold">{path}</code>
           </div>
           <div className="mt-2 font-medium">{title}</div>
           {description && <div className="mt-1 text-sm leading-6 text-muted-foreground">{description}</div>}
@@ -110,14 +110,14 @@ export function ExpandableEndpoint({ method, path, title, auth = 'Bearer key', d
           <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
         </div>
       </button>
-      {open && <div className="border-t bg-muted/20 p-4">{children}</div>}
+      {open && <div className="min-w-0 border-t bg-muted/20 p-4">{children}</div>}
     </div>
   );
 }
 
 export function ReferenceShell({ children, className }) {
   return (
-    <div className={cn('overflow-hidden rounded-lg border bg-card shadow-sm', className)}>
+    <div className={cn('min-w-0 max-w-full overflow-hidden rounded-lg border bg-card shadow-sm', className)}>
       {children}
     </div>
   );

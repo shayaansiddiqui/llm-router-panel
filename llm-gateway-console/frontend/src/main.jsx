@@ -11,6 +11,8 @@ import {
   Loader2,
   LogOut,
   Network,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   RefreshCw,
   Server,
@@ -305,6 +307,7 @@ function AdminConsole({ onLogout }) {
   const [page, setPage] = useState('Dashboard');
   const [providers, setProviders] = useState([]);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   function refresh() {
     setRefreshKey((value) => value + 1);
@@ -318,43 +321,81 @@ function AdminConsole({ onLogout }) {
 
   return (
     <div className="min-h-screen bg-background">
-      <aside className="fixed inset-y-0 left-0 z-20 hidden w-72 border-r bg-card lg:block">
-        <div className="flex h-16 items-center gap-3 border-b px-5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <Workflow className="h-5 w-5" />
+      <aside
+        className={cn(
+          'fixed inset-y-0 left-0 z-20 hidden border-r bg-card transition-[width] duration-200 lg:block',
+          sidebarOpen ? 'w-72' : 'w-20',
+        )}
+      >
+        <div className={cn('flex h-16 items-center border-b px-4', sidebarOpen ? 'justify-between gap-3' : 'justify-center')}>
+          <div className={cn('flex min-w-0 items-center gap-3', !sidebarOpen && 'justify-center')}>
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+              <Workflow className="h-5 w-5" />
+            </div>
+            {sidebarOpen && (
+              <div className="grid min-w-0">
+                <strong className="truncate text-sm">LLM Gateway</strong>
+                <span className="truncate text-xs text-muted-foreground">Admin Console</span>
+              </div>
+            )}
           </div>
-          <div className="grid">
-            <strong className="text-sm">LLM Gateway</strong>
-            <span className="text-xs text-muted-foreground">Admin Console</span>
-          </div>
+          {sidebarOpen && (
+            <Button type="button" variant="ghost" size="icon" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar">
+              <PanelLeftClose className="h-4 w-4" />
+            </Button>
+          )}
         </div>
+
+        {!sidebarOpen && (
+          <div className="border-b p-3">
+            <Button type="button" variant="ghost" size="icon" onClick={() => setSidebarOpen(true)} aria-label="Open sidebar" className="w-full">
+              <PanelLeftOpen className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
+
         <nav className="grid gap-1 p-3">
           {pages.map(({ name, icon: Icon }) => (
             <button
               key={name}
               className={cn(
-                'flex h-10 items-center gap-3 rounded-md px-3 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground',
+                'flex h-10 items-center rounded-md text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground',
+                sidebarOpen ? 'gap-3 px-3 text-left' : 'justify-center px-0',
                 page === name && 'bg-accent text-accent-foreground'
               )}
               onClick={() => setPage(name)}
+              title={name}
+              aria-label={name}
             >
-              <Icon className="h-4 w-4" />
-              {name}
+              <Icon className="h-4 w-4 shrink-0" />
+              {sidebarOpen && <span className="truncate">{name}</span>}
             </button>
           ))}
         </nav>
       </aside>
 
-      <div className="lg:pl-72">
+      <div className={cn('transition-[padding] duration-200', sidebarOpen ? 'lg:pl-72' : 'lg:pl-20')}>
         <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur">
           <div className="flex min-h-16 flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between lg:px-8">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 lg:hidden">
-                <Network className="h-5 w-5 text-primary" />
-                <span className="text-sm font-semibold">LLM Gateway</span>
+            <div className="flex min-w-0 items-start gap-3">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="hidden shrink-0 lg:inline-flex"
+                onClick={() => setSidebarOpen((current) => !current)}
+                aria-label={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
+              >
+                {sidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
+              </Button>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 lg:hidden">
+                  <Network className="h-5 w-5 text-primary" />
+                  <span className="text-sm font-semibold">LLM Gateway</span>
+                </div>
+                <h1 className="mt-1 text-2xl font-semibold tracking-tight lg:mt-0">{page}</h1>
+                <p className="truncate text-sm text-muted-foreground">{headerUrl}</p>
               </div>
-              <h1 className="mt-1 text-2xl font-semibold tracking-tight lg:mt-0">{page}</h1>
-              <p className="truncate text-sm text-muted-foreground">{headerUrl}</p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Badge active={providers.some((provider) => provider.is_active)} label={`${providers.filter((provider) => provider.is_active).length} active`} />

@@ -44,7 +44,7 @@ export function ShadSelect({ value, onChange, placeholder, options }) {
 
   return (
     <Select value={normalizedValue} onValueChange={(nextValue) => onChange(nextValue === 'none' ? '' : nextValue)}>
-      <SelectTrigger className="w-full">
+      <SelectTrigger className="w-full min-w-0">
         <span className={cn('truncate text-left', !selected && 'text-muted-foreground')}>{selected?.label || placeholder}</span>
       </SelectTrigger>
       <SelectContent>
@@ -61,8 +61,8 @@ export function ShadSelect({ value, onChange, placeholder, options }) {
 export function DataTable({ headers, rows, empty = 'No records.' }) {
   if (!rows.length) return <EmptyState>{empty}</EmptyState>;
   return (
-    <div className="overflow-hidden rounded-md border">
-      <Table>
+    <div className="min-w-0 overflow-x-auto rounded-md border">
+      <Table className="min-w-full">
         <TableHeader className="bg-muted/60">
           <TableRow>
             {headers.map((header) => (

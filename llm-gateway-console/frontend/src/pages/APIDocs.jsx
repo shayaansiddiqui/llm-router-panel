@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { BookOpenText, KeyRound, Route, Server, Terminal } from 'lucide-react';
+import { BookOpenText, Route, Server, Terminal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -27,6 +27,7 @@ const PATHS = {
   health: '/health',
 };
 const NAV_ITEMS = [
+  ['example', 'Example Request'],
   ['endpoints', 'Endpoints'],
   ['authentication', 'Authentication'],
   ['chat', 'Chat Completions'],
@@ -230,7 +231,7 @@ data = response.json()`,
         </div>
       </header>
 
-      <div className="grid gap-8 xl:grid-cols-[190px_minmax(0,1fr)_minmax(380px,440px)]">
+      <div className="grid gap-8 xl:grid-cols-[190px_minmax(0,1fr)]">
         <aside className="hidden xl:block">
           <nav className="sticky top-24 grid gap-1 border-l pl-3 text-sm">
             {NAV_ITEMS.map(([id, label]) => (
@@ -242,6 +243,65 @@ data = response.json()`,
         </aside>
 
         <main className="grid min-w-0 gap-10">
+          <DocsSection id="example" title="Example Request" description="Use the public gateway domain. Provider is optional; omit it for automatic routing.">
+            <ReferenceShell>
+              <div className="flex items-center gap-2 border-b px-4 py-4 font-semibold">
+                <Route className="h-4 w-4 text-muted-foreground" />
+                Request builder
+              </div>
+
+              <div className="grid gap-4 p-4">
+                <div className="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_minmax(190px,240px)_minmax(260px,1fr)_140px]">
+                  <label className="grid min-w-0 gap-2">
+                    <span className="text-sm font-medium">API key</span>
+                    <Input value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="lgc_..." />
+                  </label>
+                  <label className="grid min-w-0 gap-2">
+                    <span className="text-sm font-medium">Provider</span>
+                    <ShadSelect value={selectedProviderName} onChange={setSelectedProviderName} placeholder="Automatic routing" options={providerOptions} />
+                  </label>
+                  <label className="grid min-w-0 gap-2">
+                    <span className="text-sm font-medium">Model</span>
+                    <ShadSelect value={selectedModelName} onChange={setSelectedModelName} placeholder="Select model" options={modelOptions} />
+                  </label>
+                  <label className="grid min-w-0 gap-2">
+                    <span className="text-sm font-medium">Temperature</span>
+                    <Input type="number" step="0.1" min="0" max="2" value={temperature} onChange={(event) => setTemperature(event.target.value)} />
+                  </label>
+                </div>
+
+                <label className="grid min-w-0 gap-2">
+                  <span className="text-sm font-medium">Prompt</span>
+                  <textarea
+                    className="min-h-24 rounded-lg border bg-background px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                    value={prompt}
+                    onChange={(event) => setPrompt(event.target.value)}
+                  />
+                </label>
+              </div>
+
+              <div className="border-t">
+                <div className="flex flex-wrap gap-1 border-b p-3">
+                  {SNIPPETS.map((item) => (
+                    <Button
+                      key={item}
+                      type="button"
+                      variant={snippet === item ? 'secondary' : 'ghost'}
+                      size="sm"
+                      onClick={() => setSnippet(item)}
+                      className={cn('h-8', snippet === item && 'font-semibold')}
+                    >
+                      {item}
+                    </Button>
+                  ))}
+                </div>
+                <div className="min-w-0 p-4">
+                  <CodeBlock label={snippet} value={snippets[snippet]} />
+                </div>
+              </div>
+            </ReferenceShell>
+          </DocsSection>
+
           <DocsSection id="endpoints" title="Endpoints" description="Paths are relative to the public base URL.">
             <ReferenceShell>
               <ExpandableEndpoint
@@ -437,80 +497,6 @@ data = response.json()`,
           </DocsSection>
         </main>
 
-        <aside className="grid h-fit gap-4 xl:sticky xl:top-24">
-          <SectionCard className="p-0">
-            <div className="border-b p-4">
-              <div className="flex items-center gap-2 font-semibold">
-                <Route className="h-4 w-4 text-muted-foreground" />
-                Example request
-              </div>
-            </div>
-
-            <div className="grid gap-3 p-4">
-              <div className="grid gap-2">
-                <span className="text-sm font-medium">API key</span>
-                <Input value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="lgc_..." />
-              </div>
-              <div className="grid gap-2">
-                <span className="text-sm font-medium">Provider</span>
-                <ShadSelect value={selectedProviderName} onChange={setSelectedProviderName} placeholder="Automatic routing" options={providerOptions} />
-              </div>
-              <div className="grid gap-2">
-                <span className="text-sm font-medium">Model</span>
-                <ShadSelect value={selectedModelName} onChange={setSelectedModelName} placeholder="Select model" options={modelOptions} />
-              </div>
-              <div className="grid gap-2">
-                <span className="text-sm font-medium">Prompt</span>
-                <textarea
-                  className="min-h-20 rounded-lg border bg-background px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-                  value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
-                />
-              </div>
-              <div className="grid gap-2">
-                <span className="text-sm font-medium">Temperature</span>
-                <Input type="number" step="0.1" min="0" max="2" value={temperature} onChange={(event) => setTemperature(event.target.value)} />
-              </div>
-            </div>
-          </SectionCard>
-
-          <ReferenceShell>
-            <div className="flex flex-wrap gap-1 border-b p-3">
-              {SNIPPETS.map((item) => (
-                <Button
-                  key={item}
-                  type="button"
-                  variant={snippet === item ? 'secondary' : 'ghost'}
-                  size="sm"
-                  onClick={() => setSnippet(item)}
-                  className={cn('h-8', snippet === item && 'font-semibold')}
-                >
-                  {item}
-                </Button>
-              ))}
-            </div>
-            <div className="p-3">
-              <CodeBlock label={snippet} value={snippets[snippet]} />
-            </div>
-          </ReferenceShell>
-
-          <SectionCard>
-            <div className="mb-2 flex items-center gap-2 text-sm font-medium">
-              <KeyRound className="h-4 w-4 text-muted-foreground" />
-              Required headers
-            </div>
-            <div className="grid gap-2 text-sm">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground">Authorization</span>
-                <InlineCode>Bearer &lt;API_KEY&gt;</InlineCode>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground">Content-Type</span>
-                <InlineCode>application/json</InlineCode>
-              </div>
-            </div>
-          </SectionCard>
-        </aside>
       </div>
     </section>
   );
