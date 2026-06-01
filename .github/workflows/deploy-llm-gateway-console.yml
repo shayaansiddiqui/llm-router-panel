@@ -1,0 +1,143 @@
+name: Deploy LLM Gateway Console
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'llm-gateway-console/**'
+      - '.github/workflows/deploy-llm-gateway-console.yml'
+  workflow_dispatch:
+
+env:
+  APP_DIR: llm-gateway-console
+  SERVER_HOST: 168.231.74.54
+  SERVER_USER: root
+  SERVER_PORT: 22
+  DEPLOY_PATH: ${{ vars.LLM_GATEWAY_DEPLOY_PATH || '/opt/llm-router-panel/llm-gateway-console' }}
+  SERVICE_NAME: ${{ vars.LLM_GATEWAY_SERVICE_NAME || 'llm-gateway-console' }}
+  SERVICE_PORT: ${{ vars.LLM_GATEWAY_SERVICE_PORT || '8010' }}
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: ${{ env.APP_DIR }}/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: ${{ env.APP_DIR }}/frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: ${{ env.APP_DIR }}/frontend
+        env:
+          VITE_PUBLIC_GATEWAY_URL: ${{ vars.VITE_PUBLIC_GATEWAY_URL || 'https://ai.gettingstarted.app' }}
+        run: npm run build
+
+      - name: Move frontend build into backend static directory
+        run: |
+          rm -rf "${APP_DIR}/backend/app/static"
+          mkdir -p "${APP_DIR}/backend/app/static"
+          cp -R "${APP_DIR}/frontend/dist/." "${APP_DIR}/backend/app/static/"
+
+      - name: Validate backend syntax
+        run: python3 -m py_compile "${APP_DIR}/backend/app/main.py" "${APP_DIR}/backend/app/database.py" "${APP_DIR}/backend/app/schemas.py"
+
+      - name: Create deploy archive
+        run: |
+          tar -czf llm-gateway-console.tar.gz \
+            --exclude='frontend/node_modules' \
+            --exclude='frontend/dist' \
+            --exclude='backend/.venv' \
+            --exclude='backend/data' \
+            -C "${APP_DIR}" .
+
+      - name: Upload archive to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ env.SERVER_HOST }}
+          username: ${{ env.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ env.SERVER_PORT }}
+          source: llm-gateway-console.tar.gz
+          target: /tmp
+
+      - name: Install and restart service
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DEPLOY_PATH: ${{ env.DEPLOY_PATH }}
+          SERVICE_NAME: ${{ env.SERVICE_NAME }}
+          SERVICE_PORT: ${{ env.SERVICE_PORT }}
+          DATABASE_PATH: ${{ secrets.LLM_GATEWAY_DATABASE_PATH }}
+          ADMIN_CORS_ORIGINS: ${{ secrets.LLM_GATEWAY_ADMIN_CORS_ORIGINS }}
+          PROVIDER_REQUEST_TIMEOUT_SECONDS: ${{ secrets.LLM_GATEWAY_PROVIDER_TIMEOUT_SECONDS }}
+        with:
+          host: ${{ env.SERVER_HOST }}
+          username: ${{ env.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ env.SERVER_PORT }}
+          envs: DEPLOY_PATH,SERVICE_NAME,SERVICE_PORT,DATABASE_PATH,ADMIN_CORS_ORIGINS,PROVIDER_REQUEST_TIMEOUT_SECONDS
+          script: |
+            set -e
+
+            RELEASE_DIR="/tmp/llm-gateway-console-release"
+            rm -rf "$RELEASE_DIR"
+            mkdir -p "$RELEASE_DIR" "$DEPLOY_PATH"
+            tar -xzf /tmp/llm-gateway-console.tar.gz -C "$RELEASE_DIR"
+
+            find "$DEPLOY_PATH" -mindepth 1 -maxdepth 1 ! -name backend -exec rm -rf {} +
+            mkdir -p "$DEPLOY_PATH/backend"
+            find "$DEPLOY_PATH/backend" -mindepth 1 -maxdepth 1 ! -name .env ! -name .venv ! -name data -exec rm -rf {} +
+            cp -a "$RELEASE_DIR/." "$DEPLOY_PATH/"
+            mkdir -p "$DEPLOY_PATH/backend/data"
+
+            if [ ! -f "$DEPLOY_PATH/backend/.env" ]; then
+              cat > "$DEPLOY_PATH/backend/.env" <<EOF
+            DATABASE_PATH=${DATABASE_PATH:-./data/llm_gateway.db}
+            ADMIN_CORS_ORIGINS=${ADMIN_CORS_ORIGINS:-https://ai.gettingstarted.app}
+            PROVIDER_REQUEST_TIMEOUT_SECONDS=${PROVIDER_REQUEST_TIMEOUT_SECONDS:-60}
+            EOF
+              chmod 600 "$DEPLOY_PATH/backend/.env"
+            fi
+
+            cd "$DEPLOY_PATH/backend"
+            if [ ! -d ".venv" ]; then
+              python3 -m venv .venv
+            fi
+            .venv/bin/pip install --upgrade pip
+            .venv/bin/pip install -r requirements.txt
+            .venv/bin/python -m py_compile app/main.py app/database.py app/schemas.py
+
+            sudo tee "/etc/systemd/system/${SERVICE_NAME}.service" > /dev/null <<EOF
+            [Unit]
+            Description=LLM Gateway Console
+            After=network.target
+
+            [Service]
+            Type=simple
+            User=${USER}
+            WorkingDirectory=${DEPLOY_PATH}/backend
+            EnvironmentFile=${DEPLOY_PATH}/backend/.env
+            ExecStart=${DEPLOY_PATH}/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port ${SERVICE_PORT}
+            Restart=always
+            RestartSec=5
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
+            sudo systemctl daemon-reload
+            sudo systemctl enable "$SERVICE_NAME"
+            sudo systemctl restart "$SERVICE_NAME"
+            sleep 3
+            curl -sf "http://127.0.0.1:${SERVICE_PORT}/health"

@@ -103,6 +103,74 @@ PROVIDER_REQUEST_TIMEOUT_SECONDS=60
 
 For deployed admin panels, set `ADMIN_CORS_ORIGINS` to the frontend origin. Multiple origins can be comma-separated.
 
+## GitHub Actions Deployment
+
+The repository includes `.github/workflows/deploy-llm-gateway-console.yml`.
+
+On push to `main`, it:
+
+1. Installs frontend dependencies.
+2. Builds the React app.
+3. Copies the build into `backend/app/static`.
+4. Uploads the app archive to the server.
+5. Installs backend Python dependencies.
+6. Restarts the systemd service.
+
+Required GitHub secret:
+
+```text
+SERVER_SSH_KEY
+```
+
+The workflow already contains:
+
+```text
+SERVER_HOST=168.231.74.54
+SERVER_USER=root
+SERVER_PORT=22
+```
+
+Optional GitHub secrets:
+
+```text
+LLM_GATEWAY_DATABASE_PATH
+LLM_GATEWAY_ADMIN_CORS_ORIGINS
+LLM_GATEWAY_PROVIDER_TIMEOUT_SECONDS
+```
+
+Optional GitHub repository variables:
+
+```text
+LLM_GATEWAY_DEPLOY_PATH=/opt/llm-router-panel/llm-gateway-console
+LLM_GATEWAY_SERVICE_NAME=llm-gateway-console
+LLM_GATEWAY_SERVICE_PORT=8010
+VITE_PUBLIC_GATEWAY_URL=https://ai.gettingstarted.app
+```
+
+The workflow creates or updates the systemd service automatically. A matching sample service file is available at:
+
+```text
+deploy/llm-gateway-console.service
+```
+
+On the current shared server, port `8000` is already used by another app. The gateway service defaults to `127.0.0.1:8010`.
+
+Nginx should proxy the public domain to that port. A sample vhost is available at:
+
+```text
+deploy/nginx/ai.gettingstarted.app.conf
+```
+
+Install it on the server:
+
+```bash
+sudo cp deploy/nginx/ai.gettingstarted.app.conf /etc/nginx/sites-available/ai.gettingstarted.app
+sudo ln -s /etc/nginx/sites-available/ai.gettingstarted.app /etc/nginx/sites-enabled/ai.gettingstarted.app
+sudo nginx -t
+sudo systemctl reload nginx
+sudo certbot --nginx -d ai.gettingstarted.app
+```
+
 ## First MVP Behavior
 
 - Admin panel manages providers, models, routing rules, and logs.

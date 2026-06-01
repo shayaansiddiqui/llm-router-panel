@@ -7,3 +7,4 @@ venv/
 data/
 node_modules/
 dist/
+backend/app/static/
