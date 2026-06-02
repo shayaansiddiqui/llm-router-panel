@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BookOpenText, Route, Server, Terminal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import {
   Callout,
@@ -92,6 +93,7 @@ export function APIDocs({ providers, refreshKey }) {
   const [apiKey, setApiKey] = useState('');
   const [prompt, setPrompt] = useState('Write a short welcome message.');
   const [temperature, setTemperature] = useState('0.7');
+  const [stream, setStream] = useState(false);
   const [snippet, setSnippet] = useState('cURL');
 
   const providerNameById = useMemo(() => Object.fromEntries(providers.map((provider) => [provider.id, provider.name])), [providers]);
@@ -156,7 +158,8 @@ export function APIDocs({ providers, refreshKey }) {
     model: selectedModelName || fallbackModel,
     messages: [{ role: 'user', content: prompt || 'Hello' }],
     temperature: numericTemperature,
-  }), [fallbackModel, numericTemperature, prompt, selectedModelName, selectedProvider]);
+    ...(stream ? { stream: true } : {}),
+  }), [fallbackModel, numericTemperature, prompt, selectedModelName, selectedProvider, stream]);
   const requestBody = useMemo(() => JSON.stringify(requestPayload, null, 2), [requestPayload]);
   const snippets = useMemo(() => ({
     cURL: `curl ${fullUrl(PATHS.chat)} \\
@@ -278,6 +281,11 @@ data = response.json()`,
                     onChange={(event) => setPrompt(event.target.value)}
                   />
                 </label>
+
+                <label className="flex items-center gap-2 text-sm font-medium">
+                  <Checkbox checked={stream} onCheckedChange={(checked) => setStream(Boolean(checked))} />
+                  Stream tokens
+                </label>
               </div>
 
               <div className="border-t">
@@ -386,7 +394,7 @@ data = response.json()`,
                       [fieldLabel('messages'), 'array', 'Yes', 'OpenAI-style chat messages.'],
                       [fieldLabel('provider'), 'string', 'No', 'Provider name. Omit for automatic routing.'],
                       [fieldLabel('temperature'), 'number', 'No', 'Forwarded to the selected provider.'],
-                      [fieldLabel('stream'), 'boolean', 'No', 'Accepted as payload; streaming proxy is not defined in this MVP.'],
+                      [fieldLabel('stream'), 'boolean', 'No', 'When true, the gateway proxies provider token chunks as an OpenAI-compatible stream.'],
                     ]}
                   />
                 </div>

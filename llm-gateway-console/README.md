@@ -82,6 +82,27 @@ Lower priority numbers run first. Priority `1` is tried before priority `2`.
 
 If the first provider fails or times out, the gateway can try the next valid provider.
 
+## Token Streaming
+
+Clients can request streaming responses with:
+
+```json
+{
+  "model": "qwen2.5-coder:32b-instruct-q8_0",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Write a short welcome message."
+    }
+  ],
+  "stream": true
+}
+```
+
+When `stream` is `true`, the gateway forwards the request as a stream and passes token chunks back to the client.
+
+Failover can happen before the stream starts. Once a provider starts streaming tokens, the gateway keeps that stream connected to the same provider.
+
 ## Targeted Provider Routing
 
 If the client sends `provider`, the gateway targets that provider by name.
@@ -231,3 +252,4 @@ API keys control who can use which providers and models.
 Logs show what happened for each request.
 
 The admin panel is only for managing the gateway; client apps should call the public API endpoint.
+  

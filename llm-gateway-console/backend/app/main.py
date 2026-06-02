@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -8,12 +9,12 @@ import json
 import secrets
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
@@ -533,6 +534,120 @@ def save_request_log(
         )
 
 
+def provider_request_headers(provider: dict[str, Any], *, stream: bool = False) -> dict[str, str]:
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream" if stream else "application/json",
+    }
+    if provider.get("api_key"):
+        headers["Authorization"] = f"Bearer {provider['api_key']}"
+    return headers
+
+
+async def iter_provider_stream(
+    *,
+    client: httpx.AsyncClient,
+    response: httpx.Response,
+    provider: dict[str, Any],
+    requested_model: str,
+    started: float,
+) -> AsyncIterator[bytes]:
+    status = "success"
+    error_message = None
+    try:
+        async for chunk in response.aiter_bytes():
+            if chunk:
+                yield chunk
+    except asyncio.CancelledError:
+        status = "cancelled"
+        error_message = "Client disconnected during stream."
+        raise
+    except Exception as exc:
+        status = "failed"
+        error_message = str(exc)[:500]
+        raise
+    finally:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        await response.aclose()
+        await client.aclose()
+        save_request_log(
+            requested_model=requested_model,
+            provider=provider,
+            status=status,
+            status_code=response.status_code,
+            error_message=error_message,
+            duration_ms=duration_ms,
+        )
+
+
+async def stream_chat_completion(
+    *,
+    providers: list[dict[str, Any]],
+    forward_payload: dict[str, Any],
+    requested_model: str,
+) -> StreamingResponse:
+    last_error = "No provider attempted."
+    for provider in providers:
+        started = time.perf_counter()
+        timeout = provider["timeout_seconds"] or settings.provider_request_timeout_seconds
+        client = httpx.AsyncClient(timeout=timeout)
+
+        try:
+            request = client.build_request(
+                "POST",
+                provider_chat_url(provider["endpoint_url"]),
+                json=forward_payload,
+                headers=provider_request_headers(provider, stream=True),
+            )
+            response = await client.send(request, stream=True)
+
+            if response.is_success:
+                return StreamingResponse(
+                    iter_provider_stream(
+                        client=client,
+                        response=response,
+                        provider=provider,
+                        requested_model=requested_model,
+                        started=started,
+                    ),
+                    status_code=response.status_code,
+                    media_type=response.headers.get("content-type", "text/event-stream"),
+                    headers={
+                        "Cache-Control": response.headers.get("cache-control", "no-cache"),
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
+
+            error_body = await response.aread()
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            last_error = f"{provider['name']} returned HTTP {response.status_code}"
+            save_request_log(
+                requested_model=requested_model,
+                provider=provider,
+                status="failed",
+                status_code=response.status_code,
+                error_message=error_body.decode("utf-8", errors="replace")[:500],
+                duration_ms=duration_ms,
+            )
+            await response.aclose()
+            await client.aclose()
+        except Exception as exc:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            last_error = f"{provider['name']} failed: {exc}"
+            save_request_log(
+                requested_model=requested_model,
+                provider=provider,
+                status="failed",
+                status_code=None,
+                error_message=str(exc)[:500],
+                duration_ms=duration_ms,
+            )
+            await client.aclose()
+
+    raise HTTPException(status_code=502, detail=f"All providers failed. Last error: {last_error}")
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -606,17 +721,26 @@ async def chat_completions(request: Request) -> Any:
 
     forward_payload = dict(payload)
     forward_payload.pop("provider", None)
+
+    if forward_payload.get("stream") is True:
+        return await stream_chat_completion(
+            providers=providers,
+            forward_payload=forward_payload,
+            requested_model=requested_model,
+        )
+
     last_error = "No provider attempted."
     for provider in providers:
         started = time.perf_counter()
         timeout = provider["timeout_seconds"] or settings.provider_request_timeout_seconds
-        headers = {"Content-Type": "application/json"}
-        if provider.get("api_key"):
-            headers["Authorization"] = f"Bearer {provider['api_key']}"
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(provider_chat_url(provider["endpoint_url"]), json=forward_payload, headers=headers)
+                response = await client.post(
+                    provider_chat_url(provider["endpoint_url"]),
+                    json=forward_payload,
+                    headers=provider_request_headers(provider),
+                )
             duration_ms = int((time.perf_counter() - started) * 1000)
 
             if response.is_success:
