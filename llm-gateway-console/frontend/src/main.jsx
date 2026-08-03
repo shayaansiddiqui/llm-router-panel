@@ -7,6 +7,7 @@ import {
   Database,
   Gauge,
   KeyRound,
+  Laptop,
   ListChecks,
   Loader2,
   LogOut,
@@ -29,6 +30,7 @@ import { Label } from '@/components/ui/label';
 import { APIKeys } from '@/pages/APIKeys';
 import { APIDocs } from '@/pages/APIDocs';
 import { Login } from '@/pages/Login';
+import { Nodes } from '@/pages/Nodes';
 import { API_BASE_URL, PUBLIC_GATEWAY_URL, api, clearAdminToken, getAdminToken } from '@/lib/api';
 import { cn } from './lib/utils';
 
@@ -36,6 +38,7 @@ const pages = [
   { name: 'Dashboard', icon: Gauge },
   { name: 'Providers', icon: Server },
   { name: 'Models', icon: Braces },
+  { name: 'Nodes', icon: Laptop },
   { name: 'API Keys', icon: KeyRound },
   { name: 'API Docs', icon: BookOpenText },
   { name: 'Logs', icon: ListChecks },
@@ -68,7 +71,7 @@ function Dashboard({ refreshKey }) {
 }
 
 function Providers({ providers, refresh }) {
-  const blank = { name: '', endpoint_url: '', api_key: '', is_active: true, priority: 1, timeout_seconds: '' };
+  const blank = { name: '', endpoint_url: '', api_key: '', clear_api_key: false, is_active: true, priority: 1, timeout_seconds: '' };
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(blank);
   const [fetchingProviderId, setFetchingProviderId] = useState(null);
@@ -76,7 +79,7 @@ function Providers({ providers, refresh }) {
 
   function startEdit(provider) {
     setEditing(provider.id);
-    setForm({ ...provider, timeout_seconds: provider.timeout_seconds || '', api_key: provider.api_key || '' });
+    setForm({ ...provider, timeout_seconds: provider.timeout_seconds || '', api_key: '', clear_api_key: false });
   }
 
   async function submit(event) {
@@ -129,7 +132,20 @@ function Providers({ providers, refresh }) {
             Endpoint URL
             <Input value={form.endpoint_url} onChange={(e) => setForm({ ...form, endpoint_url: e.target.value })} placeholder="https://ai-1.gettingstarted.app" required />
           </Label>
-          <Label className="grid gap-2">API Key<Input value={form.api_key || ''} onChange={(e) => setForm({ ...form, api_key: e.target.value })} placeholder="Optional provider key" /></Label>
+          <Label className="grid gap-2">
+            API Key
+            <Input
+              value={form.api_key || ''}
+              onChange={(e) => setForm({ ...form, api_key: e.target.value, clear_api_key: false })}
+              placeholder={editing && form.has_api_key ? 'Leave blank to keep the saved key' : 'Optional provider key'}
+            />
+          </Label>
+          {editing && form.has_api_key && (
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <Checkbox checked={form.clear_api_key} onCheckedChange={(checked) => setForm({ ...form, clear_api_key: Boolean(checked), api_key: '' })} />
+              Remove the saved API key
+            </label>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
             <Label className="grid gap-2">Priority<Input type="number" min="1" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })} /></Label>
             <Label className="grid gap-2">Timeout<Input type="number" value={form.timeout_seconds} onChange={(e) => setForm({ ...form, timeout_seconds: e.target.value })} placeholder="Default" /></Label>
@@ -158,17 +174,24 @@ function Providers({ providers, refresh }) {
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="font-semibold">{provider.name}</h3>
                   <Badge active={provider.is_active} />
+                  {provider.managed_node_id && <span className="rounded bg-muted px-2 py-0.5 text-xs font-medium">Managed node</span>}
                 </div>
                 <p className="mt-1 truncate text-sm text-muted-foreground">{provider.endpoint_url}</p>
                 <p className="mt-1 text-xs text-muted-foreground">Priority {provider.priority}{provider.timeout_seconds ? ` · ${provider.timeout_seconds}s timeout` : ''}</p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="secondary" size="sm" onClick={() => fetchModels(provider)} disabled={fetchingProviderId === provider.id}>
-                  {fetchingProviderId === provider.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                  Fetch models
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => startEdit(provider)}>Edit</Button>
-                <Button variant="destructive" size="icon" onClick={() => remove(provider.id)} aria-label="Delete provider"><Trash2 className="h-4 w-4" /></Button>
+                {provider.managed_node_id ? (
+                  <span className="self-center text-xs text-muted-foreground">Manage from Nodes</span>
+                ) : (
+                  <>
+                    <Button variant="secondary" size="sm" onClick={() => fetchModels(provider)} disabled={fetchingProviderId === provider.id}>
+                      {fetchingProviderId === provider.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                      Fetch models
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => startEdit(provider)}>Edit</Button>
+                    <Button variant="destructive" size="icon" onClick={() => remove(provider.id)} aria-label="Delete provider"><Trash2 className="h-4 w-4" /></Button>
+                  </>
+                )}
               </div>
             </div>
           ))}
@@ -201,7 +224,9 @@ function Models({ providers, refreshKey }) {
             <span className="font-medium">{model.display_name || model.name}</span>,
             providerName[model.provider_id] || 'Any',
             <Badge active={model.is_active} />,
-            <Button variant="destructive" size="icon" onClick={() => remove(model.id)} aria-label="Delete model"><Trash2 className="h-4 w-4" /></Button>,
+            model.managed_node_id
+              ? <span className="text-xs text-muted-foreground">Managed in Nodes</span>
+              : <Button variant="destructive" size="icon" onClick={() => remove(model.id)} aria-label="Delete model"><Trash2 className="h-4 w-4" /></Button>,
           ])}
         />
       </Card>
@@ -417,6 +442,7 @@ function AdminConsole({ onLogout }) {
           {page === 'Dashboard' && <Dashboard refreshKey={refreshKey} />}
           {page === 'Providers' && <Providers providers={providers} refresh={refresh} />}
           {page === 'Models' && <Models providers={providers} refreshKey={refreshKey} />}
+          {page === 'Nodes' && <Nodes refreshKey={refreshKey} />}
           {page === 'API Keys' && <APIKeys providers={providers} refreshKey={refreshKey} />}
           {page === 'API Docs' && <APIDocs providers={providers} refreshKey={refreshKey} />}
           {page === 'Logs' && <Logs refreshKey={refreshKey} />}

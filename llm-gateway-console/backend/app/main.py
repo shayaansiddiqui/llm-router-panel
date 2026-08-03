@@ -19,6 +19,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .database import fetch_all, fetch_one, get_db, init_db, utc_now
+from .node_routes import router as node_router
+from .node_provisioning import deactivate_stale_nodes
 from .schemas import (
     AdminLoginIn,
     ApiKeyIn,
@@ -40,11 +42,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/assets", StaticFiles(directory=ASSETS_DIR, check_dir=False), name="frontend-assets")
+app.include_router(node_router)
 
 
 @app.middleware("http")
 async def protect_admin_api(request: Request, call_next):
     path = request.url.path
+    if path.startswith("/api/") or path.startswith("/v1/"):
+        deactivate_stale_nodes(settings)
     if request.method == "OPTIONS" or not path.startswith("/api/") or path == "/api/auth/login":
         return await call_next(request)
 
@@ -56,6 +61,10 @@ async def protect_admin_api(request: Request, call_next):
 
 @app.on_event("startup")
 def on_startup() -> None:
+    if not settings.admin_password or settings.admin_password == "admin":
+        raise RuntimeError("ADMIN_PASSWORD must be set to a non-default value")
+    if len(settings.admin_session_secret) < 32:
+        raise RuntimeError("ADMIN_SESSION_SECRET must contain at least 32 characters")
     init_db()
 
 
@@ -65,6 +74,29 @@ def normalize_bool(row: dict[str, Any]) -> dict[str, Any]:
         if key in normalized:
             normalized[key] = bool(normalized[key])
     return normalized
+
+
+def admin_provider(row: dict[str, Any]) -> dict[str, Any]:
+    provider = normalize_bool(row)
+    provider["has_api_key"] = bool(provider.get("api_key"))
+    provider["managed_node_id"] = provider.get("managed_node_id") or None
+    provider.pop("api_key", None)
+    provider.pop("cf_access_client_id", None)
+    provider.pop("cf_access_client_secret", None)
+    return provider
+
+
+def require_unmanaged_provider(provider_id: int) -> dict[str, Any]:
+    provider = fetch_one("SELECT * FROM providers WHERE id = ?", (provider_id,))
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found.")
+    managed_node = fetch_one("SELECT id FROM nodes WHERE provider_id = ?", (provider_id,))
+    if managed_node:
+        raise HTTPException(
+            status_code=409,
+            detail="This provider is managed by a gsai node. Use the Nodes page instead.",
+        )
+    return provider
 
 
 def hash_api_key(api_key: str) -> str:
@@ -541,6 +573,9 @@ def provider_request_headers(provider: dict[str, Any], *, stream: bool = False) 
     }
     if provider.get("api_key"):
         headers["Authorization"] = f"Bearer {provider['api_key']}"
+    if provider.get("cf_access_client_id") and provider.get("cf_access_client_secret"):
+        headers["CF-Access-Client-Id"] = provider["cf_access_client_id"]
+        headers["CF-Access-Client-Secret"] = provider["cf_access_client_secret"]
     return headers
 
 
@@ -826,7 +861,15 @@ def dashboard() -> dict[str, Any]:
 
 @app.get("/api/providers")
 def get_providers() -> list[dict[str, Any]]:
-    return [normalize_bool(row) for row in fetch_all("SELECT * FROM providers ORDER BY priority ASC, id ASC")]
+    rows = fetch_all(
+        """
+        SELECT providers.*, nodes.id AS managed_node_id
+        FROM providers
+        LEFT JOIN nodes ON nodes.provider_id = providers.id
+        ORDER BY providers.priority ASC, providers.id ASC
+        """
+    )
+    return [admin_provider(row) for row in rows]
 
 
 @app.post("/api/providers")
@@ -841,7 +884,7 @@ async def create_provider(provider: ProviderIn) -> dict[str, Any]:
             (
                 provider.name,
                 provider.endpoint_url,
-                provider.api_key,
+                provider.api_key or None,
                 int(provider.is_active),
                 provider.priority,
                 provider.timeout_seconds,
@@ -856,11 +899,17 @@ async def create_provider(provider: ProviderIn) -> dict[str, Any]:
         created_provider["model_fetch"] = save_provider_models(provider_id, model_names)
     except Exception as exc:
         created_provider["model_fetch"] = {"found": 0, "created": 0, "skipped": 0, "error": str(exc)}
-    return created_provider
+    return admin_provider(created_provider)
 
 
 @app.put("/api/providers/{provider_id}")
 def update_provider(provider_id: int, provider: ProviderIn) -> dict[str, Any]:
+    existing = require_unmanaged_provider(provider_id)
+    next_api_key = existing.get("api_key")
+    if provider.clear_api_key:
+        next_api_key = None
+    elif provider.api_key:
+        next_api_key = provider.api_key
     with get_db() as db:
         db.execute(
             """
@@ -871,7 +920,7 @@ def update_provider(provider_id: int, provider: ProviderIn) -> dict[str, Any]:
             (
                 provider.name,
                 provider.endpoint_url,
-                provider.api_key,
+                next_api_key,
                 int(provider.is_active),
                 provider.priority,
                 provider.timeout_seconds,
@@ -882,11 +931,12 @@ def update_provider(provider_id: int, provider: ProviderIn) -> dict[str, Any]:
     updated = fetch_one("SELECT * FROM providers WHERE id = ?", (provider_id,))
     if not updated:
         raise HTTPException(status_code=404, detail="Provider not found.")
-    return normalize_bool(updated)
+    return admin_provider(updated)
 
 
 @app.delete("/api/providers/{provider_id}")
 def delete_provider(provider_id: int) -> dict[str, bool]:
+    require_unmanaged_provider(provider_id)
     with get_db() as db:
         db.execute("DELETE FROM providers WHERE id = ?", (provider_id,))
     return {"ok": True}
@@ -894,9 +944,7 @@ def delete_provider(provider_id: int) -> dict[str, bool]:
 
 @app.post("/api/providers/{provider_id}/fetch-models")
 async def fetch_provider_models(provider_id: int) -> dict[str, Any]:
-    provider = fetch_one("SELECT * FROM providers WHERE id = ?", (provider_id,))
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found.")
+    provider = require_unmanaged_provider(provider_id)
 
     try:
         model_names = await fetch_model_names_for_provider(provider)
@@ -909,11 +957,21 @@ async def fetch_provider_models(provider_id: int) -> dict[str, Any]:
 
 @app.get("/api/models")
 def get_models() -> list[dict[str, Any]]:
-    return [normalize_bool(row) for row in fetch_all("SELECT * FROM models ORDER BY name ASC, id ASC")]
+    rows = fetch_all(
+        """
+        SELECT models.*, nodes.id AS managed_node_id
+        FROM models
+        LEFT JOIN nodes ON nodes.provider_id = models.provider_id
+        ORDER BY models.name ASC, models.id ASC
+        """
+    )
+    return [normalize_bool(row) for row in rows]
 
 
 @app.post("/api/models")
 def create_model(model: ModelIn) -> dict[str, Any]:
+    if model.provider_id is not None:
+        require_unmanaged_provider(model.provider_id)
     now = utc_now()
     with get_db() as db:
         cursor = db.execute(
@@ -929,6 +987,11 @@ def create_model(model: ModelIn) -> dict[str, Any]:
 
 @app.delete("/api/models/{model_id}")
 def delete_model(model_id: int) -> dict[str, bool]:
+    model = fetch_one("SELECT provider_id FROM models WHERE id = ?", (model_id,))
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found.")
+    if model.get("provider_id") is not None:
+        require_unmanaged_provider(int(model["provider_id"]))
     with get_db() as db:
         db.execute("DELETE FROM models WHERE id = ?", (model_id,))
     return {"ok": True}

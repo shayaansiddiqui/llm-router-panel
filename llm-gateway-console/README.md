@@ -169,6 +169,27 @@ qwen3.6:35b                     -> olares
 
 Clients request models by name. The gateway uses this model name to find a compatible provider.
 
+### Nodes
+
+Creates short-lived, single-use enrollment tokens for `gsai connect` and shows
+connected macOS, Linux, and Windows AI nodes. The raw enrollment token is
+shown once; only its SHA-256 hash is stored.
+
+During enrollment, the Gateway lists eligible Cloudflare Tunnels, validates
+the requested hostname, creates the DNS route, configures the tunnel ingress,
+and registers the node as a provider. Existing tunnels are adoptable only
+when they have no active connector and no published application routes. Once
+adopted, the tunnel becomes gsai-managed and is deleted on disconnect so its
+connector token cannot be reused.
+
+Nodes send authenticated heartbeats. A missed-heartbeat timeout marks both
+the node and its generated provider offline, preventing routing to a computer
+that is no longer reachable.
+
+Node-generated providers and models are read-only on the Providers and Models
+pages; their lifecycle is owned by the Nodes page. Node secrets and Cloudflare
+Access credentials remain server-side and are never returned to the browser.
+
 ### API Keys
 
 Used to create client keys for apps and services.
@@ -220,6 +241,40 @@ Authentication:
 
 ```text
 Authorization: Bearer <API_KEY>
+```
+
+## Node provisioning configuration
+
+The Gateway refuses to start with an empty/default admin password or an
+`ADMIN_SESSION_SECRET` shorter than 32 characters. Production deployments
+must provide `LLM_GATEWAY_ADMIN_PASSWORD`; the workflow generates and
+preserves a strong session secret when one is not supplied explicitly.
+
+The deployment workflow reads these GitHub Actions secrets:
+
+```text
+LLM_GATEWAY_CLOUDFLARE_API_TOKEN
+LLM_GATEWAY_CLOUDFLARE_ACCOUNT_ID
+LLM_GATEWAY_CLOUDFLARE_ZONE_ID
+LLM_GATEWAY_CLOUDFLARE_ACCESS_SERVICE_TOKEN_ID
+LLM_GATEWAY_CLOUDFLARE_ACCESS_CLIENT_ID
+LLM_GATEWAY_CLOUDFLARE_ACCESS_CLIENT_SECRET
+```
+
+The Cloudflare API token stays on the Gateway server and must be scoped to the
+account and zone used for node provisioning. The service-token ID identifies
+the token permitted by each Gateway-only Access application; the client ID
+and client secret are the corresponding credentials sent only by the Gateway
+when it calls a node.
+
+Optional repository variables control the managed DNS zone and timeouts:
+
+```text
+LLM_GATEWAY_NODE_MANAGED_ZONE
+LLM_GATEWAY_NODE_AGENT_ORIGIN
+LLM_GATEWAY_NODE_ENROLLMENT_TTL_SECONDS
+LLM_GATEWAY_NODE_HEARTBEAT_TIMEOUT_SECONDS
+LLM_GATEWAY_NODE_PUBLIC_MAX_TTL_SECONDS
 ```
 
 ## Example Request

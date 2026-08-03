@@ -22,9 +22,15 @@ def get_db() -> Iterator[sqlite3.Connection]:
     settings = get_settings()
     db_dir = os.path.dirname(settings.database_path)
     if db_dir:
-        os.makedirs(db_dir, exist_ok=True)
+        os.makedirs(db_dir, mode=0o700, exist_ok=True)
 
     conn = sqlite3.connect(settings.database_path)
+    if (
+        os.name != "nt"
+        and settings.database_path != ":memory:"
+        and not settings.database_path.startswith("file:")
+    ):
+        os.chmod(settings.database_path, 0o600)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     try:
@@ -116,11 +122,83 @@ def init_db() -> None:
                 FOREIGN KEY(api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE,
                 FOREIGN KEY(model_id) REFERENCES models(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS node_enrollment_tokens (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                token_prefix TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                expires_at TEXT NOT NULL,
+                used_at TEXT,
+                claim_id TEXT,
+                claim_expires_at TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS node_enrollment_sessions (
+                id TEXT PRIMARY KEY,
+                enrollment_token_id TEXT NOT NULL,
+                installation_id TEXT NOT NULL,
+                request_json TEXT NOT NULL,
+                suggested_hostname TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                committed_at TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(enrollment_token_id) REFERENCES node_enrollment_tokens(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS nodes (
+                id TEXT PRIMARY KEY,
+                installation_id TEXT NOT NULL UNIQUE,
+                username TEXT NOT NULL,
+                computer_name TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                architecture TEXT NOT NULL,
+                runtime TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'provisioning',
+                tunnel_id TEXT UNIQUE,
+                tunnel_name TEXT,
+                tunnel_managed INTEGER NOT NULL DEFAULT 0,
+                hostname TEXT UNIQUE,
+                dns_record_id TEXT,
+                access_mode TEXT NOT NULL,
+                access_app_id TEXT,
+                public_expires_at TEXT,
+                api_key_hash TEXT,
+                node_secret_hash TEXT,
+                provider_id INTEGER,
+                last_seen_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE SET NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
+            CREATE INDEX IF NOT EXISTS idx_enrollment_sessions_expiry ON node_enrollment_sessions(expires_at);
             """
         )
         columns = {row["name"] for row in db.execute("PRAGMA table_info(api_keys)").fetchall()}
         if "key_value" not in columns:
             db.execute("ALTER TABLE api_keys ADD COLUMN key_value TEXT")
+
+        provider_columns = {row["name"] for row in db.execute("PRAGMA table_info(providers)").fetchall()}
+        if "cf_access_client_id" not in provider_columns:
+            db.execute("ALTER TABLE providers ADD COLUMN cf_access_client_id TEXT")
+        if "cf_access_client_secret" not in provider_columns:
+            db.execute("ALTER TABLE providers ADD COLUMN cf_access_client_secret TEXT")
+
+        node_columns = {row["name"] for row in db.execute("PRAGMA table_info(nodes)").fetchall()}
+        if "node_secret_hash" not in node_columns:
+            db.execute("ALTER TABLE nodes ADD COLUMN node_secret_hash TEXT")
+
+        enrollment_token_columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(node_enrollment_tokens)").fetchall()
+        }
+        if "claim_id" not in enrollment_token_columns:
+            db.execute("ALTER TABLE node_enrollment_tokens ADD COLUMN claim_id TEXT")
+        if "claim_expires_at" not in enrollment_token_columns:
+            db.execute("ALTER TABLE node_enrollment_tokens ADD COLUMN claim_expires_at TEXT")
 
 
 def fetch_all(query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
