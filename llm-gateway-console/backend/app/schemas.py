@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -7,7 +7,6 @@ class ProviderIn(BaseModel):
     name: str = Field(min_length=1)
     endpoint_url: str = Field(min_length=1)
     api_key: str | None = None
-    clear_api_key: bool = False
     is_active: bool = True
     priority: int = Field(default=1, ge=1)
     timeout_seconds: int | None = None
@@ -76,36 +75,3 @@ class ChatCompletionRequest(BaseModel):
     messages: list[dict[str, Any]] | None = None
 
     model_config = {"extra": "allow"}
-
-
-class EnrollmentTokenIn(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
-    expires_in_seconds: int = Field(default=900, ge=60, le=86400)
-
-
-class NodePrepareIn(BaseModel):
-    installation_id: str = Field(min_length=16, max_length=128)
-    username: str = Field(default="", max_length=255)
-    computer_name: str = Field(default="", max_length=255)
-    platform: str = Field(min_length=1, max_length=32)
-    architecture: str = Field(min_length=1, max_length=32)
-    runtime: Literal["ollama"]
-    model: str = Field(min_length=1, max_length=256)
-    suggested_hostname: str = Field(min_length=1, max_length=253)
-
-
-class TunnelSelectionIn(BaseModel):
-    mode: Literal["create", "existing"]
-    id: str | None = Field(default=None, max_length=64)
-
-
-class AccessSelectionIn(BaseModel):
-    mode: Literal["gateway", "api_key", "public"]
-    public_ttl_seconds: int = Field(default=0, ge=0, le=86400)
-
-
-class NodeCommitIn(BaseModel):
-    session_id: str = Field(min_length=16, max_length=128)
-    tunnel: TunnelSelectionIn
-    hostname: str = Field(min_length=1, max_length=253)
-    access: AccessSelectionIn
