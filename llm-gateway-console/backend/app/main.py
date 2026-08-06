@@ -1136,6 +1136,47 @@ def serve_frontend_index() -> FileResponse:
     return FileResponse(index_path)
 
 
+def serve_public_file(filename: str, *, cache_control: str) -> FileResponse:
+    file_path = STATIC_DIR / filename
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Public document not found.")
+
+    response = FileResponse(file_path)
+    response.headers["Cache-Control"] = cache_control
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.get("/gsai-logo.png", include_in_schema=False)
+def public_oauth_logo() -> FileResponse:
+    return serve_public_file("gsai-logo.png", cache_control="public, max-age=86400")
+
+
+@app.get("/legal.css", include_in_schema=False)
+def public_legal_styles() -> FileResponse:
+    return serve_public_file("legal.css", cache_control="public, max-age=3600")
+
+
+@app.get("/privacy", include_in_schema=False)
+def public_privacy_policy() -> FileResponse:
+    response = serve_public_file("privacy.html", cache_control="public, max-age=300")
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; style-src 'self'; img-src 'self'; "
+        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    )
+    return response
+
+
+@app.get("/terms", include_in_schema=False)
+def public_terms_of_service() -> FileResponse:
+    response = serve_public_file("terms.html", cache_control="public, max-age=300")
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; style-src 'self'; img-src 'self'; "
+        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    )
+    return response
+
+
 @app.get("/", include_in_schema=False)
 def frontend_root() -> FileResponse:
     return serve_frontend_index()

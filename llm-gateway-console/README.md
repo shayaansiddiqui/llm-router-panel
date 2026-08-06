@@ -37,6 +37,21 @@ Client apps only need to know:
 https://ai.gettingstarted.app/v1/chat/completions
 ```
 
+## Public OAuth Pages
+
+The gateway also serves the public publisher resources used by the gsai
+Cloudflare OAuth client:
+
+```text
+Client URL:          https://ai.gettingstarted.app
+Logo URL:            https://ai.gettingstarted.app/gsai-logo.png
+Privacy Policy URL:  https://ai.gettingstarted.app/privacy
+Terms of Service URL: https://ai.gettingstarted.app/terms
+```
+
+The privacy policy and terms are static HTML documents so they remain readable
+without the admin session or client-side JavaScript.
+
 ## Request Flow
 
 When a client sends a chat request:

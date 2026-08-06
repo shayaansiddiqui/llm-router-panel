@@ -70,6 +70,12 @@ export function Login({ onLogin }) {
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <LockKeyhole className="h-4 w-4" />}
             Sign in
           </Button>
+
+          <p className="text-center text-xs text-muted-foreground">
+            <a className="underline underline-offset-4 hover:text-foreground" href="/privacy">Privacy</a>
+            {' · '}
+            <a className="underline underline-offset-4 hover:text-foreground" href="/terms">Terms</a>
+          </p>
         </form>
       </section>
     </main>

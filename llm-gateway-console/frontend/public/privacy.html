@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Privacy Policy for gsai CLI and the GettingStarted AI gateway." />
+    <link rel="stylesheet" href="/legal.css" />
+    <title>Privacy Policy · gsai</title>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="site-header__inner">
+        <a class="brand" href="/">
+          <span>GettingStarted AI</span>
+        </a>
+        <nav aria-label="Legal">
+          <a href="/privacy" aria-current="page">Privacy</a>
+          <a href="/terms">Terms</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="legal-document">
+      <p class="eyebrow">Legal</p>
+      <h1>Privacy Policy</h1>
+      <p class="updated">Effective August 6, 2026</p>
+
+      <p>This policy explains how GettingStarted AI (“GettingStarted”, “we”, “us”) handles information when you use the gsai command-line application, the AI gateway, and related services.</p>
+
+      <h2>Information we process</h2>
+      <p>Depending on the features you use, we may process:</p>
+      <ul>
+        <li>Cloudflare account, zone, DNS, and tunnel information that you authorize gsai to access;</li>
+        <li>node configuration, model identifiers, provider availability, and operational status;</li>
+        <li>gateway request metadata such as requested model, selected provider, result status, latency, and timestamp;</li>
+        <li>technical and security information needed to operate, protect, and troubleshoot the service.</li>
+      </ul>
+
+      <h2>AI requests</h2>
+      <p>The gateway forwards AI requests to the provider selected for that request. The gateway’s application database records operational metadata and does not intentionally store prompt or response bodies. The selected model provider may process request content under its own terms and privacy policy.</p>
+
+      <h2>Cloudflare authorization</h2>
+      <p>gsai requests only the Cloudflare permissions displayed during authorization and uses them to perform actions you initiate, such as listing eligible zones, creating or configuring a tunnel, and managing its DNS route. You can revoke an OAuth authorization from your Cloudflare account at any time.</p>
+
+      <h2>Local credentials</h2>
+      <p>Credentials required to operate a connected node are stored on the node with restricted file permissions. Do not share configuration directories, access tokens, tunnel credentials, or API keys. Removing a local credential does not automatically revoke it at the issuing provider.</p>
+
+      <h2>How we use information</h2>
+      <p>We use information to provide requested functionality, route AI traffic, maintain security, diagnose failures, prevent abuse, and improve reliability. We do not sell personal information.</p>
+
+      <h2>Retention and security</h2>
+      <p>We retain service information only for as long as reasonably necessary for operation, security, legal obligations, and dispute resolution. We use access controls and transport encryption, but no system can guarantee absolute security.</p>
+
+      <h2>Your choices</h2>
+      <p>You can stop or disconnect a node, revoke Cloudflare authorization, rotate provider credentials, and stop using the service. Requests concerning information controlled by GettingStarted may be submitted through <a href="https://gettingstarted.app">gettingstarted.app</a>.</p>
+
+      <h2>Changes</h2>
+      <p>We may update this policy as the service changes. The effective date above identifies the current version.</p>
+    </main>
+
+    <footer class="site-footer">
+      <span>© 2026 GettingStarted AI</span>
+      <span><a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></span>
+    </footer>
+  </body>
+</html>
