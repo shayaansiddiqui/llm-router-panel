@@ -1133,7 +1133,9 @@ def serve_frontend_index() -> FileResponse:
     index_path = STATIC_DIR / "index.html"
     if not index_path.exists():
         raise HTTPException(status_code=404, detail="Frontend build not found. Run npm run build and copy dist to backend/app/static.")
-    return FileResponse(index_path)
+    response = FileResponse(index_path)
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
 
 
 def serve_public_file(filename: str, *, cache_control: str) -> FileResponse:
