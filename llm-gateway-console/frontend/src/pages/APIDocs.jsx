@@ -19,7 +19,8 @@ import { api, PUBLIC_GATEWAY_URL } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 const AUTO_PROVIDER = '__auto__';
-const DEFAULT_MODEL = 'qwen2.5-coder:32b-instruct-q8_0';
+const OMIT_MODEL = '__omit_model__';
+const DEFAULT_MODEL = 'MODEL_NAME';
 const SNIPPETS = ['cURL', 'JavaScript', 'Python', 'JSON'];
 const PATHS = {
   chat: '/v1/chat/completions',
@@ -88,8 +89,8 @@ function modelsResponseExample(models, providerNameById) {
 
 export function APIDocs({ providers, refreshKey }) {
   const [models, setModels] = useState([]);
-  const [selectedProviderName, setSelectedProviderName] = useState('');
-  const [selectedModelName, setSelectedModelName] = useState('');
+  const [selectedProviderName, setSelectedProviderName] = useState(AUTO_PROVIDER);
+  const [selectedModelName, setSelectedModelName] = useState(OMIT_MODEL);
   const [apiKey, setApiKey] = useState('');
   const [prompt, setPrompt] = useState('Write a short welcome message.');
   const [temperature, setTemperature] = useState('0.7');
@@ -119,7 +120,11 @@ export function APIDocs({ providers, refreshKey }) {
     || models[0]?.name
     || DEFAULT_MODEL;
   const modelOptions = useMemo(
-    () => uniqueModelOptions(visibleModels.length ? visibleModels : models, fallbackModel, providerNameById),
+    () => [
+      { value: OMIT_MODEL, label: 'Automatic — omit model field' },
+      { value: 'auto', label: 'Automatic — send "auto"' },
+      ...uniqueModelOptions(visibleModels, fallbackModel, providerNameById).filter((option) => option.value !== 'auto'),
+    ],
     [fallbackModel, models, providerNameById, visibleModels],
   );
   const providerOptions = useMemo(() => [
@@ -148,6 +153,7 @@ export function APIDocs({ providers, refreshKey }) {
   }, [activeProviders, providers, selectedProviderName]);
 
   useEffect(() => {
+    if (selectedModelName === OMIT_MODEL || selectedModelName === 'auto') return;
     if (!visibleModels.some((model) => model.name === selectedModelName)) {
       setSelectedModelName(fallbackModel);
     }
@@ -155,17 +161,17 @@ export function APIDocs({ providers, refreshKey }) {
 
   const requestPayload = useMemo(() => ({
     ...(selectedProvider ? { provider: selectedProvider.name } : {}),
-    model: selectedModelName || fallbackModel,
+    ...(selectedModelName === OMIT_MODEL ? {} : { model: selectedModelName || fallbackModel }),
     messages: [{ role: 'user', content: prompt || 'Hello' }],
     temperature: numericTemperature,
     ...(stream ? { stream: true } : {}),
   }), [fallbackModel, numericTemperature, prompt, selectedModelName, selectedProvider, stream]);
   const requestBody = useMemo(() => JSON.stringify(requestPayload, null, 2), [requestPayload]);
   const snippets = useMemo(() => ({
-    cURL: `curl ${fullUrl(PATHS.chat)} \\
+    cURL: `curl${stream ? ' -N' : ''} ${fullUrl(PATHS.chat)} \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer ${authToken}" \\
-  -d '${requestBody}'`,
+  -d '${requestBody.replaceAll("'", "'\"'\"'")}'`,
     JavaScript: `const response = await fetch("${fullUrl(PATHS.chat)}", {
   method: "POST",
   headers: {
@@ -175,8 +181,21 @@ export function APIDocs({ providers, refreshKey }) {
   body: JSON.stringify(${requestBody})
 });
 
-const data = await response.json();`,
-    Python: `import requests
+if (!response.ok) throw new Error(await response.text());
+${stream ? `const reader = response.body.getReader();
+const decoder = new TextDecoder();
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  console.log(decoder.decode(value, { stream: true }));
+}
+const remaining = decoder.decode();
+if (remaining) console.log(remaining);
+// Raw SSE text for inspection; chunks are not necessarily complete events.` : 'const data = await response.json();\nconsole.log(data);'}`,
+    Python: `import json
+import requests
+
+payload = json.loads(${JSON.stringify(requestBody)})
 
 response = requests.post(
     "${fullUrl(PATHS.chat)}",
@@ -184,16 +203,24 @@ response = requests.post(
         "Content-Type": "application/json",
         "Authorization": "Bearer ${authToken}",
     },
-    json=${requestBody},
+    json=payload,
+    stream=${stream ? 'True' : 'False'},
+    timeout=(10, 180),
 )
 
-data = response.json()`,
+response.raise_for_status()
+${stream ? `try:
+    for line in response.iter_lines(decode_unicode=True):
+        if line:
+            print(line, flush=True)
+finally:
+    response.close()` : 'data = response.json()\nprint(data)'}`,
     JSON: requestBody,
-  }), [authToken, requestBody]);
+  }), [authToken, requestBody, stream]);
   const chatResponseExample = useMemo(() => JSON.stringify({
     id: 'chatcmpl_...',
     object: 'chat.completion',
-    model: requestPayload.model,
+    model: requestPayload.model && requestPayload.model !== 'auto' ? requestPayload.model : 'SELECTED_MODEL_NAME',
     choices: [
       {
         index: 0,
@@ -238,7 +265,10 @@ data = response.json()`,
         <aside className="hidden xl:block">
           <nav className="sticky top-24 grid gap-1 border-l pl-3 text-sm">
             {NAV_ITEMS.map(([id, label]) => (
-              <a key={id} href={`#${id}`} className="rounded-md px-2 py-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground">
+              <a key={id} href={`#${id}`} onClick={(event) => {
+                event.preventDefault();
+                document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }} className="rounded-md px-2 py-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground">
                 {label}
               </a>
             ))}
@@ -246,7 +276,7 @@ data = response.json()`,
         </aside>
 
         <main className="grid min-w-0 gap-10">
-          <DocsSection id="example" title="Example Request" description="Use the public gateway domain. Provider is optional; omit it for automatic routing.">
+          <DocsSection id="example" title="Example Request" description="Model and provider are optional. The default example omits both so the router selects from permitted, reachable models. Use the base URL for your running environment.">
             <ReferenceShell>
               <div className="flex items-center gap-2 border-b px-4 py-4 font-semibold">
                 <Route className="h-4 w-4 text-muted-foreground" />
@@ -264,8 +294,8 @@ data = response.json()`,
                     <ShadSelect value={selectedProviderName} onChange={setSelectedProviderName} placeholder="Automatic routing" options={providerOptions} />
                   </label>
                   <label className="grid min-w-0 gap-2">
-                    <span className="text-sm font-medium">Model</span>
-                    <ShadSelect value={selectedModelName} onChange={setSelectedModelName} placeholder="Select model" options={modelOptions} />
+                    <span className="text-sm font-medium">Model (optional)</span>
+                    <ShadSelect value={selectedModelName} onChange={setSelectedModelName} placeholder="Automatic model selection" options={modelOptions} />
                   </label>
                   <label className="grid min-w-0 gap-2">
                     <span className="text-sm font-medium">Temperature</span>
@@ -308,6 +338,7 @@ data = response.json()`,
                 </div>
               </div>
             </ReferenceShell>
+            <Callout title="Optional does not mean an empty string">Leave the model field out for Auto, or send model: "auto". The builder removes the field when “Automatic — omit model field” is selected. Sending model: "" or only spaces is invalid. This builder creates examples only; use Playground to run a request.</Callout>
           </DocsSection>
 
           <DocsSection id="endpoints" title="Endpoints" description="Paths are relative to the public base URL.">
@@ -365,6 +396,7 @@ data = response.json()`,
           </DocsSection>
 
           <DocsSection id="authentication" title="Authentication">
+            <Callout title="Application keys and Playground are different">A gateway client key is required whenever any key record exists, including inactive records. With zero records the public gateway permits anonymous calls; remove the Authorization header only for deliberate local no-key testing. Blank-key signed-in Playground uses your admin session on a separate protected endpoint. Do not distribute that session or a node token to applications.</Callout>
             <SectionCard>
               <DataTable
                 headers={['Header', 'Value', 'Applies to']}
@@ -390,20 +422,33 @@ data = response.json()`,
                   <DataTable
                     headers={['Body field', 'Type', 'Required', 'Description']}
                     rows={[
-                      [fieldLabel('model'), 'string', 'Yes', 'Model requested by the client.'],
+                      [fieldLabel('model'), 'string | null', 'No', 'Omit, send null or "auto" for automatic selection. A nonempty installed model name selects explicitly. Empty/whitespace strings are invalid (400).'],
                       [fieldLabel('messages'), 'array', 'Yes', 'OpenAI-style chat messages.'],
                       [fieldLabel('provider'), 'string', 'No', 'Provider name. Omit for automatic routing.'],
+                      [fieldLabel('routing'), 'object', 'No', 'Optional preference, required_capabilities, min_context_tokens, and min_quality. No task is needed for auto; legacy task scores apply only with an explicit model.'],
                       [fieldLabel('temperature'), 'number', 'No', 'Forwarded to the selected provider.'],
+                      [fieldLabel('max_tokens'), 'integer', 'No', 'Optional positive output budget; provider/model support varies. Thinking and answer may share it. Omit to leave generation limits to the runtime; this does not guarantee unlimited output.'],
                       [fieldLabel('stream'), 'boolean', 'No', 'When true, the gateway proxies provider token chunks as an OpenAI-compatible stream.'],
                     ]}
                   />
                 </div>
               </ReferenceShell>
 
+              <SectionCard>
+                <DataTable headers={['Model value', 'Behavior']} rows={[
+                  [fieldLabel('field omitted'), 'Automatic selection from permitted, reachable candidates. Recommended when the app does not choose a model.'],
+                  [fieldLabel('"auto"'), 'Automatic selection, same intent as omission.'],
+                  [fieldLabel('null'), 'Automatic selection on the chat endpoint.'],
+                  [fieldLabel('"MODEL_NAME"'), 'Explicit selection: replace with an exact permitted installed name from /v1/models.'],
+                  [fieldLabel('"" or "   "'), '400: empty strings are not the same as omitting the field.'],
+                ]} />
+              </SectionCard>
+
               <div className="grid gap-4 lg:grid-cols-2">
                 <CodeBlock label="Request body" value={requestBody} />
                 <CodeBlock label="200 response" value={chatResponseExample} />
               </div>
+              <Callout title="The response identifies the answering model">With Auto, SELECTED_MODEL_NAME above is an illustrative placeholder, not a value to send. The actual response contains the selected upstream model name. Auto still needs an available selector and eligible models; omitting model does not bypass permissions or guarantee a route. stream: true returns SSE events, not a single JSON response. Model omission is this gateway’s extension; if your OpenAI-compatible SDK requires model, send "auto" instead.</Callout>
             </div>
           </DocsSection>
 
@@ -426,11 +471,11 @@ data = response.json()`,
             </div>
           </DocsSection>
 
-          <DocsSection id="routing" title="Routing Rules">
+          <DocsSection id="routing" title="Routing behavior">
             <SectionCard className="grid gap-4">
               <div className="grid gap-3 lg:grid-cols-2">
-                <Callout title="Automatic routing">
-                  Omit <InlineCode>provider</InlineCode>. The gateway filters active providers by API key scope, model ownership, routing rules, then priority. It can fail over to the next provider.
+                <Callout title="Python model selection">
+                  Omit <InlineCode>model</InlineCode> or send <InlineCode>auto</InlineCode>. By default, local Ollama makes a nonthinking selection call after permission, live inventory, capability and context checks. New imported models enter the list automatically. The judgement is not a measured quality guarantee. Selector failures use only an explicitly configured eligible fallback; otherwise 503 explains the problem. Explicit min_quality cannot be certified by this selector. Provider failover stays on the selected model. Automatic reasoning-only length finishes may try at most two different permitted models without an explicit output cap; a gateway recovery event is emitted. Partial final answers and tool calls are not replayed. Equal-priority nodes balance gateway-observed active requests. Native capacity is not measured.
                 </Callout>
                 <Callout title="Targeted provider">
                   Send <InlineCode>provider</InlineCode> as the provider name. The gateway validates that provider/model pair and only tries that provider.
@@ -438,7 +483,7 @@ data = response.json()`,
               </div>
 
               <DataTable
-                headers={['Order', 'Automatic', 'Targeted']}
+                headers={['Order', 'Explicit model: automatic provider', 'Explicit model: targeted provider']}
                 rows={[
                   ['1', 'Validate API key scope', 'Validate API key scope'],
                   ['2', 'Filter active providers', 'Resolve provider by name'],
@@ -455,12 +500,12 @@ data = response.json()`,
               <DataTable
                 headers={['Status', 'Meaning']}
                 rows={[
-                  ['400', 'Invalid JSON body, invalid provider type, missing model, or provider/model mismatch.'],
+                  ['400', 'Invalid body, routing options, provider type, or provider/model mismatch.'],
                   ['401', 'Missing, invalid, or inactive API key.'],
                   ['403', 'API key scope does not allow the requested provider or model.'],
                   ['404', 'Requested provider name does not exist.'],
                   ['502', 'Every attempted provider failed.'],
-                  ['503', 'No permitted provider is active, or selected provider/model is inactive.'],
+                  ['503', 'No eligible model meets requirements, no permitted provider is active, or selected provider/model is inactive.'],
                 ]}
               />
               <CodeBlock label="Error shape" value={JSON.stringify({ detail: 'API key is not allowed to use this provider.' }, null, 2)} />

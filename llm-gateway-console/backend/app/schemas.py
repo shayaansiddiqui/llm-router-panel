@@ -1,6 +1,6 @@
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProviderIn(BaseModel):
@@ -75,3 +75,45 @@ class ChatCompletionRequest(BaseModel):
     messages: list[dict[str, Any]] | None = None
 
     model_config = {"extra": "allow"}
+
+
+class QualityMeasurement(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    score: float = Field(ge=0, le=1)
+    sample_count: int = Field(ge=1)
+    benchmark: str = Field(min_length=1, max_length=256)
+
+
+class ModelRoutingProfileIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    capabilities: list[Literal["text", "vision", "tools", "json_schema"]] = Field(default_factory=list, max_length=4)
+    context_tokens: int | None = Field(default=None, ge=1)
+    task_quality: dict[str, QualityMeasurement] = Field(default_factory=dict, max_length=32)
+    evidence_source: str = Field(min_length=1, max_length=512)
+    model_revision: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+class RoutingEvaluationIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    case_id: str = Field(min_length=1, max_length=128)
+    model_revision: str = Field(min_length=1, max_length=256)
+    rubric: str = Field(min_length=1, max_length=128)
+    request_text: str = Field(min_length=1, max_length=8192)
+    score: float = Field(ge=0, le=1)
+    latency_ms: float | None = Field(default=None, gt=0)
+    evaluation_group: str | None = Field(default=None, min_length=1, max_length=128)
+    source: str = Field(min_length=1, max_length=512)
+
+
+class RoutingDefaultsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    fallback_model_id: int | None = Field(default=None, gt=0)
+
+
+class RoutingOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    task: Literal["general", "coding", "reasoning", "summarization", "translation"] = "general"
+    preference: Literal["balanced", "fast", "quality"] = "balanced"
+    required_capabilities: list[Literal["text", "vision", "tools", "json_schema"]] = Field(default_factory=list, max_length=4)
+    min_context_tokens: int = Field(default=0, ge=0)
+    min_quality: float | None = Field(default=None, ge=0, le=1)

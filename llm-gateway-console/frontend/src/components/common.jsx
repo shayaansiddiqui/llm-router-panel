@@ -38,6 +38,11 @@ export function EmptyState({ children }) {
   );
 }
 
+export function ErrorNotice({ message }) {
+  if (!message) return null;
+  return <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm">{message}</div>;
+}
+
 export function ShadSelect({ value, onChange, placeholder, options }) {
   const normalizedValue = value || 'none';
   const selected = options.find((option) => (option.value || 'none') === normalizedValue);
@@ -65,8 +70,8 @@ export function DataTable({ headers, rows, empty = 'No records.' }) {
       <Table className="min-w-full">
         <TableHeader className="bg-muted/60">
           <TableRow>
-            {headers.map((header) => (
-              <TableHead key={header} className="px-4 text-xs font-semibold uppercase text-muted-foreground">
+            {headers.map((header, index) => (
+              <TableHead key={`${header}-${index}`} className="px-4 text-xs font-semibold uppercase text-muted-foreground">
                 {header}
               </TableHead>
             ))}

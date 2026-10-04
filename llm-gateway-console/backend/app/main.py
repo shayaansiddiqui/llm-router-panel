@@ -16,13 +16,25 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
-from .config import get_settings
+from .config import get_settings, get_router_settings
 from .database import fetch_all, fetch_one, get_db, init_db, utc_now
+from .node_readiness import rank_ready_candidates
+from .llm_selector import selector_inventory
+from .ollama_chat import chat_request, stream_chunks as ollama_stream_chunks, completion as ollama_completion
+from .stream_recovery import recover as recover_stream
+from .automatic_preparation import automatic_preparation
+from .learned_router import evaluation_rows, snapshot, TRAINER_VERSION, artifact_from_json
+from .node_scheduler import reserve_provider, renew as renew_node_lease, release as release_node_lease
+from .semantic_router import configuration as router_configuration, encode, MAX_EVALUATIONS
 from .schemas import (
     AdminLoginIn,
     ApiKeyIn,
     ModelIn,
+    ModelRoutingProfileIn,
+    RoutingEvaluationIn,
+    RoutingDefaultsIn,
     ProviderIn,
     RoutingRuleIn,
 )
@@ -38,6 +50,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Gateway-Routing-Policy", "X-Gateway-Routing-Decision",
+                    "X-Gateway-Decision-Id", "X-Gateway-Selected-Model-Id", "X-Gateway-Selected-Provider-Id"],
 )
 app.mount("/assets", StaticFiles(directory=ASSETS_DIR, check_dir=False), name="frontend-assets")
 
@@ -55,8 +69,14 @@ async def protect_admin_api(request: Request, call_next):
 
 
 @app.on_event("startup")
-def on_startup() -> None:
+async def on_startup() -> None:
     init_db()
+    automatic_preparation.start()
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    await automatic_preparation.stop()
 
 
 def normalize_bool(row: dict[str, Any]) -> dict[str, Any]:
@@ -544,6 +564,18 @@ def provider_request_headers(provider: dict[str, Any], *, stream: bool = False) 
     return headers
 
 
+def record_dispatch(decision_id, provider_id):
+    if not decision_id:
+        return
+    with get_db() as db:
+        row = db.execute('SELECT decision_json FROM routing_decisions WHERE id=?', (decision_id,)).fetchone()
+        if row:
+            decision = json.loads(row['decision_json'])
+            decision['served_provider_id'] = provider_id
+            db.execute('UPDATE routing_decisions SET decision_json=? WHERE id=?',
+                       (json.dumps(decision, allow_nan=False), decision_id))
+
+
 async def iter_provider_stream(
     *,
     client: httpx.AsyncClient,
@@ -551,11 +583,18 @@ async def iter_provider_stream(
     provider: dict[str, Any],
     requested_model: str,
     started: float,
+    lease: str,
+    native: bool = False,
 ) -> AsyncIterator[bytes]:
     status = "success"
     error_message = None
+    renewed = time.monotonic()
     try:
-        async for chunk in response.aiter_bytes():
+        chunks = ollama_stream_chunks(response) if native else response.aiter_bytes()
+        async for chunk in chunks:
+            if time.monotonic() - renewed >= 30:
+                renew_node_lease(lease)
+                renewed = time.monotonic()
             if chunk:
                 yield chunk
     except asyncio.CancelledError:
@@ -564,9 +603,10 @@ async def iter_provider_stream(
         raise
     except Exception as exc:
         status = "failed"
-        error_message = str(exc)[:500]
+        error_message = f"{type(exc).__name__}: {str(exc) or 'Upstream stream failed.'}"[:500]
         raise
     finally:
+        release_node_lease(lease)
         duration_ms = int((time.perf_counter() - started) * 1000)
         await response.aclose()
         await client.aclose()
@@ -585,41 +625,63 @@ async def stream_chat_completion(
     providers: list[dict[str, Any]],
     forward_payload: dict[str, Any],
     requested_model: str,
+    balance_nodes: bool = False,
+    decision_id: str | None = None,
 ) -> StreamingResponse:
     last_error = "No provider attempted."
-    for provider in providers:
+    remaining = list(providers)
+    while remaining:
+        provider, lease = reserve_provider(remaining if balance_nodes else remaining[:1])
+        remaining = [item for item in remaining if item['id'] != provider['id']]
+        handed_off = False
         started = time.perf_counter()
         timeout = provider["timeout_seconds"] or settings.provider_request_timeout_seconds
         client = httpx.AsyncClient(timeout=timeout)
 
         try:
+            url, body, native = await chat_request(provider, forward_payload, provider_chat_url(provider['endpoint_url']))
             request = client.build_request(
                 "POST",
-                provider_chat_url(provider["endpoint_url"]),
-                json=forward_payload,
+                url,
+                json=body,
                 headers=provider_request_headers(provider, stream=True),
             )
             response = await client.send(request, stream=True)
 
             if response.is_success:
-                return StreamingResponse(
+                record_dispatch(decision_id, provider['id'])
+                async def cleanup_stream(client=client, response=response, lease=lease):
+                    release_node_lease(lease)
+                    await response.aclose()
+                    await client.aclose()
+                stream = StreamingResponse(
                     iter_provider_stream(
                         client=client,
                         response=response,
                         provider=provider,
                         requested_model=requested_model,
                         started=started,
+                        lease=lease,
+                        native=native,
                     ),
                     status_code=response.status_code,
-                    media_type=response.headers.get("content-type", "text/event-stream"),
+                    background=BackgroundTask(cleanup_stream),
+                    media_type='text/event-stream' if native else response.headers.get("content-type", "text/event-stream"),
                     headers={
                         "Cache-Control": response.headers.get("cache-control", "no-cache"),
                         "Connection": "keep-alive",
                         "X-Accel-Buffering": "no",
+                        "X-Gateway-Selected-Provider-Id": str(provider['id']),
                     },
                 )
+                handed_off = True
+                return stream
 
-            error_body = await response.aread()
+            error_body = bytearray()
+            async for chunk in response.aiter_bytes():
+                error_body.extend(chunk[:4096-len(error_body)])
+                if len(error_body) >= 4096:
+                    break
             duration_ms = int((time.perf_counter() - started) * 1000)
             last_error = f"{provider['name']} returned HTTP {response.status_code}"
             save_request_log(
@@ -634,16 +696,21 @@ async def stream_chat_completion(
             await client.aclose()
         except Exception as exc:
             duration_ms = int((time.perf_counter() - started) * 1000)
-            last_error = f"{provider['name']} failed: {exc}"
+            failure = f"{type(exc).__name__}: {str(exc) or 'Upstream request failed (timeout or connection error).'}"
+            last_error = f"{provider['name']} failed: {failure}"
             save_request_log(
                 requested_model=requested_model,
                 provider=provider,
                 status="failed",
                 status_code=None,
-                error_message=str(exc)[:500],
+                error_message=failure[:500],
                 duration_ms=duration_ms,
             )
             await client.aclose()
+        finally:
+            if not handed_off:
+                release_node_lease(lease)
+                await client.aclose()
 
     raise HTTPException(status_code=502, detail=f"All providers failed. Last error: {last_error}")
 
@@ -699,51 +766,172 @@ def public_providers(request: Request) -> dict[str, Any]:
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request) -> Any:
-    payload = await request.json()
+    return await execute_chat_completion(request, admin_playground=False)
+
+
+@app.post("/api/playground/chat/completions")
+async def playground_chat_completions(request: Request) -> Any:
+    # Admin-only inference uses the same routing/forwarding/logging pipeline.
+    # Verify here as well as in middleware; no caller-controlled bypass flag.
+    token = bearer_token(request)
+    if not token or not verify_admin_token(token):
+        raise HTTPException(status_code=401, detail="Admin authentication required.")
+    return await execute_chat_completion(request, admin_playground=True)
+
+
+async def execute_chat_completion(request: Request, *, admin_playground: bool) -> Any:
+    chunks = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > 4 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Request body exceeds 4 MiB.")
+        chunks.append(chunk)
+    try:
+        payload = json.loads(b"".join(chunks))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Request body must contain valid JSON.") from exc
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
 
     requested_model = payload.get("model")
-    if not isinstance(requested_model, str) or not requested_model.strip():
+    automatic = requested_model is None or requested_model == "auto"
+    if not automatic and (not isinstance(requested_model, str) or not requested_model.strip()):
         raise HTTPException(status_code=400, detail="model must be a non-empty string.")
-    requested_model = requested_model.strip()
-    payload["model"] = requested_model
+    if not automatic:
+        requested_model = requested_model.strip()
 
     provider_name = requested_provider_name(payload)
     requested_provider = resolve_provider_by_name(provider_name)
-    validate_provider_model_pair(requested_provider, requested_model)
+    decision_headers = {}
+    if automatic or "routing" in payload:
+        api_key = None if admin_playground else authenticate_gateway_api_key(request)
+        candidates, decision = await rank_ready_candidates(
+            payload,
+            scoped_public_models(api_key),
+            scoped_public_providers(api_key),
+            provider_id=requested_provider["id"] if requested_provider else None,
+            model_name=None if automatic else requested_model,
+        )
+        if not candidates:
+            if not decision.get("reachable_model_records"):
+                explanation = "No permitted model passed the live inventory check. Check the node connection and imported model records."
+            elif not decision.get("compatible_candidates"):
+                explanation = ("Reachable models do not meet the request capabilities or context budget "
+                               f"({decision.get('context_screening_budget')} estimated units). Start a new chat, reduce the output limit, or use a compatible explicit model.")
+            elif not decision.get("relevant_measured_candidates"):
+                explanation = ("Prepared models do not satisfy the explicit minimum quality requirement. A fallback cannot bypass that requirement."
+                    if decision.get('current_predictors') else
+                    "No current trained predictor or measured fallback is ready within your permitted models. Check Models preparation/training status; new or changed models wait for compatible measurements and background fitting.")
+            else:
+                explanation = "No evaluated candidate meets the automatic quality floor for this request. Select a model explicitly or improve the relevant evaluation coverage."
+            raise HTTPException(
+                status_code=503,
+                detail=explanation,
+            )
+        selected = candidates[0]
+        requested_model = selected.model_name
+        # Failover is limited to the selected model and candidates that passed
+        # the same capability, quality and API-key filters. No silent model swap.
+        providers = []
+        seen = set()
+        for candidate in candidates:
+            if candidate.model_name == requested_model and candidate.provider["id"] not in seen:
+                providers.append(candidate.provider)
+                seen.add(candidate.provider["id"])
+        decision_headers = {
+            "X-Gateway-Routing-Policy": decision["policy"],
+            "X-Gateway-Selected-Model-Id": str(selected.model_id),
+            "X-Gateway-Routing-Decision": (decision.get('selection') or {}).get('decision_type', 'explicit_model'),
+        }
+        # Bounded audit records contain no messages, keys, embeddings or weights.
+        with get_db() as db:
+            cursor = db.execute('''INSERT INTO routing_decisions(selected_model_id,decision_json,created_at)
+                VALUES(?,?,?)''', (selected.model_id, json.dumps({
+                    'policy': decision['policy'], 'selection': decision.get('selection'),
+                    'selected': selected.public(), 'context_screening_budget': decision['context_screening_budget'],
+                }, allow_nan=False), utc_now()))
+            decision_headers['X-Gateway-Decision-Id'] = str(cursor.lastrowid)
+            db.execute('DELETE FROM routing_decisions WHERE id NOT IN (SELECT id FROM routing_decisions ORDER BY id DESC LIMIT 1000)')
+    else:
+        validate_provider_model_pair(requested_provider, requested_model)
+        api_key = None if admin_playground else validate_gateway_api_key(request, requested_model, requested_provider)
+        providers = list_active_providers(requested_model, api_key, requested_provider)
 
-    api_key = validate_gateway_api_key(request, requested_model, requested_provider)
-    providers = list_active_providers(requested_model, api_key, requested_provider)
+    payload["model"] = requested_model
 
     if not providers:
         raise HTTPException(status_code=503, detail="No active permitted LLM providers are configured.")
 
     forward_payload = dict(payload)
     forward_payload.pop("provider", None)
+    forward_payload.pop("routing", None)
 
     if forward_payload.get("stream") is True:
-        return await stream_chat_completion(
+        response = await stream_chat_completion(
             providers=providers,
             forward_payload=forward_payload,
             requested_model=requested_model,
+            balance_nodes=automatic,
+            decision_id=decision_headers.get('X-Gateway-Decision-Id'),
         )
+        if (automatic and settings.router_selection_mode == 'local_llm'
+                and 'max_tokens' not in payload and 'max_completion_tokens' not in payload
+                and not payload.get('tools') and not payload.get('functions')):
+            attempted_names = [requested_model]
+            async def next_model_stream(failed_models):
+                remaining_models = [row for row in scoped_public_models(api_key) if row['name'] not in attempted_names]
+                retry_payload = {**payload, 'routing': {**payload.get('routing', {}), 'preference': 'quality'}}
+                choices, retry_decision = await rank_ready_candidates(
+                    retry_payload, remaining_models, scoped_public_providers(api_key),
+                    provider_id=requested_provider['id'] if requested_provider else None,
+                )
+                if not choices:
+                    return None
+                next_name = choices[0].model_name
+                attempted_names.append(next_name)
+                next_providers = list({row.provider['id']: row.provider for row in choices
+                                       if row.model_name == next_name}.values())
+                with get_db() as db:
+                    original = db.execute('SELECT decision_json FROM routing_decisions WHERE id=?',
+                        (decision_headers.get('X-Gateway-Decision-Id'),)).fetchone()
+                    if original:
+                        audit = json.loads(original['decision_json'])
+                        audit.setdefault('recovery_attempts', []).append({
+                            'failed_models': attempted_names[:-1], 'selected_model': next_name,
+                            'selection': retry_decision.get('selection'),
+                            'reason': 'generation_limit_without_final_answer'})
+                        db.execute('UPDATE routing_decisions SET decision_json=? WHERE id=?',
+                            (json.dumps(audit, allow_nan=False), decision_headers.get('X-Gateway-Decision-Id')))
+                return await stream_chat_completion(providers=next_providers,
+                    forward_payload={**forward_payload, 'model': next_name}, requested_model=next_name,
+                    balance_nodes=True, decision_id=decision_headers.get('X-Gateway-Decision-Id'))
+            response = StreamingResponse(recover_stream(response, next_model_stream),
+                media_type='text/event-stream', headers=dict(response.headers),
+                background=response.background)
+        response.headers.update(decision_headers)
+        return response
 
     last_error = "No provider attempted."
-    for provider in providers:
+    remaining = list(providers)
+    while remaining:
+        provider, lease = reserve_provider(remaining if automatic else remaining[:1])
+        remaining = [item for item in remaining if item['id'] != provider['id']]
         started = time.perf_counter()
         timeout = provider["timeout_seconds"] or settings.provider_request_timeout_seconds
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
+                url, body, native = await chat_request(provider, forward_payload, provider_chat_url(provider['endpoint_url']))
                 response = await client.post(
-                    provider_chat_url(provider["endpoint_url"]),
-                    json=forward_payload,
+                    url,
+                    json=body,
                     headers=provider_request_headers(provider),
                 )
             duration_ms = int((time.perf_counter() - started) * 1000)
 
             if response.is_success:
+                record_dispatch(decision_headers.get('X-Gateway-Decision-Id'), provider['id'])
                 save_request_log(
                     requested_model=requested_model,
                     provider=provider,
@@ -753,9 +941,10 @@ async def chat_completions(request: Request) -> Any:
                     duration_ms=duration_ms,
                 )
                 return Response(
-                    content=response.content,
+                    content=json.dumps(ollama_completion(response.json(), stream=False)).encode() if native else response.content,
                     status_code=response.status_code,
-                    media_type=response.headers.get("content-type", "application/json"),
+                    media_type='application/json' if native else response.headers.get("content-type", "application/json"),
+                    headers={**decision_headers, 'X-Gateway-Selected-Provider-Id': str(provider['id'])},
                 )
 
             last_error = f"{provider['name']} returned HTTP {response.status_code}"
@@ -769,16 +958,19 @@ async def chat_completions(request: Request) -> Any:
             )
         except Exception as exc:
             duration_ms = int((time.perf_counter() - started) * 1000)
-            last_error = f"{provider['name']} failed: {exc}"
+            failure = f"{type(exc).__name__}: {str(exc) or 'Upstream request failed (timeout or connection error).'}"
+            last_error = f"{provider['name']} failed: {failure}"
             save_request_log(
                 requested_model=requested_model,
                 provider=provider,
                 status="failed",
                 status_code=None,
-                error_message=str(exc)[:500],
+                error_message=failure[:500],
                 duration_ms=duration_ms,
             )
 
+        finally:
+            release_node_lease(lease)
     raise HTTPException(status_code=502, detail=f"All providers failed. Last error: {last_error}")
 
 
@@ -815,12 +1007,22 @@ def dashboard() -> dict[str, Any]:
     model_count = fetch_one("SELECT COUNT(*) AS count FROM models")["count"]
     log_count = fetch_one("SELECT COUNT(*) AS count FROM request_logs")["count"]
     recent_logs = fetch_all("SELECT * FROM request_logs ORDER BY id DESC LIMIT 8")
+    attempt_metrics = fetch_one(
+        """
+        SELECT
+            COUNT(CASE WHEN status IN ('success', 'failed') THEN 1 END) AS completed_count,
+            COUNT(CASE WHEN status = 'success' THEN 1 END) AS success_count,
+            AVG(CASE WHEN status = 'success' THEN duration_ms END) AS average_success_duration_ms
+        FROM request_logs
+        """
+    )
     return {
         "provider_count": provider_count,
         "active_provider_count": active_provider_count,
         "model_count": model_count,
         "log_count": log_count,
         "recent_logs": recent_logs,
+        "attempt_metrics": attempt_metrics,
     }
 
 
@@ -856,6 +1058,7 @@ async def create_provider(provider: ProviderIn) -> dict[str, Any]:
         created_provider["model_fetch"] = save_provider_models(provider_id, model_names)
     except Exception as exc:
         created_provider["model_fetch"] = {"found": 0, "created": 0, "skipped": 0, "error": str(exc)}
+    automatic_preparation.notify()
     return created_provider
 
 
@@ -882,6 +1085,7 @@ def update_provider(provider_id: int, provider: ProviderIn) -> dict[str, Any]:
     updated = fetch_one("SELECT * FROM providers WHERE id = ?", (provider_id,))
     if not updated:
         raise HTTPException(status_code=404, detail="Provider not found.")
+    automatic_preparation.notify()
     return normalize_bool(updated)
 
 
@@ -904,12 +1108,209 @@ async def fetch_provider_models(provider_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"Could not fetch provider models: {exc}") from exc
 
     result = save_provider_models(provider_id, model_names)
+    automatic_preparation.notify()
     return {"provider_id": provider_id, **result}
 
 
 @app.get("/api/models")
 def get_models() -> list[dict[str, Any]]:
     return [normalize_bool(row) for row in fetch_all("SELECT * FROM models ORDER BY name ASC, id ASC")]
+
+
+@app.get("/api/models/{model_id}/routing-profile")
+def get_model_routing_profile(model_id: int) -> dict[str, Any]:
+    if not fetch_one("SELECT id FROM models WHERE id = ?", (model_id,)):
+        raise HTTPException(status_code=404, detail="Model not found.")
+    profile = fetch_one("SELECT * FROM model_routing_profiles WHERE model_id = ?", (model_id,))
+    if not profile:
+        return {"model_id": model_id, "profile": None}
+    return {
+        "model_id": model_id,
+        "profile": {
+            "capabilities": json.loads(profile["capabilities_json"]),
+            "context_tokens": profile["context_tokens"],
+            "task_quality": json.loads(profile["task_quality_json"]),
+            "evidence_source": profile["evidence_source"],
+            "model_revision": profile["model_revision"],
+        },
+        "updated_at": profile["updated_at"],
+    }
+
+
+@app.put("/api/models/{model_id}/routing-profile")
+def put_model_routing_profile(model_id: int, profile: ModelRoutingProfileIn) -> dict[str, Any]:
+    with get_db() as db:
+        if not db.execute("SELECT id FROM models WHERE id = ?", (model_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="Model not found.")
+        db.execute(
+            """
+            INSERT INTO model_routing_profiles
+                (model_id, capabilities_json, context_tokens, task_quality_json, evidence_source, updated_at, model_revision)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(model_id) DO UPDATE SET
+                capabilities_json = excluded.capabilities_json,
+                context_tokens = excluded.context_tokens,
+                task_quality_json = excluded.task_quality_json,
+                evidence_source = excluded.evidence_source,
+                updated_at = excluded.updated_at,
+                model_revision = excluded.model_revision
+            """,
+            (model_id, json.dumps(sorted(set(profile.capabilities))), profile.context_tokens,
+             json.dumps(profile.model_dump()["task_quality"]), profile.evidence_source, utc_now(), profile.model_revision),
+        )
+        db.execute("DELETE FROM routing_runtime_identity WHERE model_id = ?", (model_id,))
+    automatic_preparation.notify()
+    return get_model_routing_profile(model_id)
+
+
+@app.post("/api/router/preview")
+async def preview_model_routing(payload: dict[str, Any]) -> dict[str, Any]:
+    """Admin-only inspection; local_llm mode generates a selector choice, not an answer."""
+    provider = resolve_provider_by_name(requested_provider_name(payload))
+    model_name = payload.get("model")
+    if model_name is not None and (not isinstance(model_name, str) or not model_name.strip()):
+        raise HTTPException(status_code=400, detail="model must be a non-empty string.")
+    candidates, policy = await rank_ready_candidates(
+        payload, scoped_public_models(), scoped_public_providers(),
+        provider_id=provider["id"] if provider else None,
+        model_name=model_name.strip() if model_name and model_name != "auto" else None,
+    )
+    return {
+        "policy": policy,
+        "selected": candidates[0].public() if candidates else None,
+        "candidates": [candidate.public() for candidate in candidates],
+        "scope": "admin_inventory; actual inference additionally applies the client API key scope",
+    }
+
+
+@app.get("/api/router/readiness")
+async def router_readiness() -> dict[str, Any]:
+    """Configuration is not a claim that encoder loading or quality is verified."""
+    import importlib.util
+    from datetime import datetime, timedelta, timezone
+    router_settings = get_router_settings()
+    if settings.router_selection_mode == 'local_llm':
+        installed = await selector_inventory()
+        return {
+            'mode': 'local_llm', 'configured': installed, 'dependencies_installed': True,
+            'selector_model': settings.router_selector_model, 'selector_available': installed,
+            'thinking': False, 'timeout_seconds': settings.router_selector_timeout_seconds,
+            'local_chat_context_tokens': max(2048, settings.ollama_chat_context_tokens),
+            'automatic_preparation': False, 'preparation': None, 'predictors': [],
+            'defaults': fetch_one('SELECT fallback_model_id FROM routing_defaults WHERE id=1') or {'fallback_model_id': None},
+            'models': fetch_all('''SELECT m.id,m.name,m.provider_id,m.is_active,
+                n.is_active AS provider_active FROM models m
+                LEFT JOIN providers n ON n.id=m.provider_id ORDER BY m.id'''),
+        }
+    preparation = fetch_one("SELECT status,message,completed,total,updated_at FROM routing_preparation WHERE id=1")
+    if preparation and preparation['status'] in {'running', 'checking'}:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
+        if preparation['updated_at'] < cutoff:
+            preparation = {**preparation, 'status': 'interrupted', 'message': 'Preparation heartbeat expired; rerun the preparation command.'}
+    predictors = fetch_all('SELECT model_id,model_revision,snapshot_revision,artifact_json,updated_at FROM routing_predictors')
+    current_rows = {}
+    try:
+        for row in evaluation_rows():
+            current_rows.setdefault(row['model_id'], []).append(row)
+    except ValueError:
+        pass
+    fingerprints = {model_id: snapshot(rows) for model_id, rows in current_rows.items()}
+    summaries = []
+    for predictor in predictors:
+        try:
+            artifact = artifact_from_json(predictor['artifact_json'])
+            summaries.append({key: predictor[key] for key in ('model_id', 'model_revision', 'snapshot_revision', 'updated_at')} | {
+                'status': artifact.get('status') if fingerprints.get(predictor['model_id']) == predictor['snapshot_revision'] else 'stale',
+                'sample_count': artifact.get('sample_count'),
+                'validation': artifact.get('validation'),
+            })
+        except (ValueError, TypeError, KeyError):
+            summaries.append({'model_id': predictor['model_id'], 'status': 'invalid'})
+    return {**router_configuration(), "encoder_loaded": "not_checked",
+            "trainer_version": TRAINER_VERSION,
+            "predictors": summaries,
+            "defaults": fetch_one('SELECT fallback_model_id FROM routing_defaults WHERE id=1') or {'fallback_model_id': None},
+            "automatic_preparation": settings.router_auto_prepare,
+            "dependencies_installed": all(importlib.util.find_spec(package) is not None for package in ('sentence_transformers', 'onnxruntime', 'numpy', 'threadpoolctl')),
+            "preparation": preparation,
+            "preparation_command": "make router-setup",
+            "models": fetch_all("""SELECT m.id, m.name, m.provider_id, m.is_active, n.is_active AS provider_active, p.model_revision,
+                COUNT(e.case_id) AS current_evaluations FROM models m
+                LEFT JOIN providers n ON n.id=m.provider_id
+                LEFT JOIN model_routing_profiles p ON p.model_id = m.id
+                LEFT JOIN routing_evaluations e ON e.model_id = m.id
+                  AND e.model_revision = p.model_revision AND e.encoder_revision = ? AND e.rubric = ?
+                GROUP BY m.id ORDER BY m.id""",
+                (router_settings.router_encoder_revision, router_settings.router_evaluation_rubric))}
+
+
+@app.put('/api/router/defaults')
+def put_router_defaults(defaults: RoutingDefaultsIn):
+    with get_db() as db:
+        if defaults.fallback_model_id is not None and not db.execute('''SELECT m.id FROM models m
+            JOIN providers p ON p.id=m.provider_id WHERE m.id=? AND m.is_active=1 AND p.is_active=1''',
+            (defaults.fallback_model_id,)).fetchone():
+            raise HTTPException(400, 'Fallback must reference an enabled provider-bound model.')
+        db.execute('''INSERT INTO routing_defaults(id,fallback_model_id) VALUES(1,?)
+            ON CONFLICT(id) DO UPDATE SET fallback_model_id=excluded.fallback_model_id''', (defaults.fallback_model_id,))
+    return defaults.model_dump()
+
+
+@app.get('/api/router/decisions')
+def router_decisions():
+    return [{'id': row['id'], 'selected_model_id': row['selected_model_id'],
+             'created_at': row['created_at'], 'decision': json.loads(row['decision_json'])} for row in
+            fetch_all('SELECT id,selected_model_id,decision_json,created_at FROM routing_decisions ORDER BY id DESC LIMIT 100')]
+
+
+@app.put("/api/models/{model_id}/evaluations/{case_id}")
+def put_routing_evaluation(model_id: int, case_id: str, evaluation: RoutingEvaluationIn) -> dict[str, Any]:
+    router_settings = get_router_settings()
+    if case_id != evaluation.case_id:
+        raise HTTPException(400, "case_id in the path and body must match.")
+    if evaluation.rubric != router_settings.router_evaluation_rubric:
+        raise HTTPException(400, "Evaluation rubric must match the configured router rubric.")
+    profile = fetch_one("SELECT model_revision FROM model_routing_profiles WHERE model_id = ?", (model_id,))
+    if not profile or profile["model_revision"] != evaluation.model_revision:
+        raise HTTPException(409, "Set a matching model revision in the routing profile before importing evaluations.")
+    vector = encode(evaluation.request_text)
+    if get_router_settings().router_encoder_revision != router_settings.router_encoder_revision:
+        raise HTTPException(409, "Encoder configuration changed during evaluation import.")
+    with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        # Recheck under the write lock to avoid a concurrent profile update.
+        profile = db.execute("SELECT model_revision FROM model_routing_profiles WHERE model_id = ?", (model_id,)).fetchone()
+        if not profile or profile["model_revision"] != evaluation.model_revision:
+            raise HTTPException(409, "Model revision changed during evaluation import.")
+        case = db.execute("SELECT request_text FROM routing_evaluations WHERE case_id = ? LIMIT 1", (case_id,)).fetchone()
+        if case and case["request_text"] != evaluation.request_text:
+            raise HTTPException(409, "Shared case IDs must identify identical request text.")
+        exists = db.execute("SELECT 1 FROM routing_evaluations WHERE model_id = ? AND case_id = ?", (model_id, case_id)).fetchone()
+        if not exists and db.execute("SELECT COUNT(*) FROM routing_evaluations").fetchone()[0] >= MAX_EVALUATIONS:
+            raise HTTPException(409, "Evaluation storage limit reached; archive evaluations first.")
+        db.execute("""INSERT INTO routing_evaluations
+            (model_id, case_id, model_revision, rubric, encoder_revision, request_text, embedding_json, score, source, updated_at, latency_ms,evaluation_group)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(model_id, case_id) DO UPDATE SET model_revision=excluded.model_revision,
+            rubric=excluded.rubric, encoder_revision=excluded.encoder_revision,
+            request_text=excluded.request_text, embedding_json=excluded.embedding_json,
+            score=excluded.score, source=excluded.source, updated_at=excluded.updated_at, latency_ms=excluded.latency_ms,
+            evaluation_group=excluded.evaluation_group""",
+            (model_id, case_id, evaluation.model_revision, evaluation.rubric,
+             router_settings.router_encoder_revision, evaluation.request_text, json.dumps(vector),
+             evaluation.score, evaluation.source, utc_now(), evaluation.latency_ms,evaluation.evaluation_group))
+    automatic_preparation.notify()
+    return {"model_id": model_id, "case_id": case_id, "stored": True}
+
+
+@app.delete("/api/models/{model_id}/evaluations/{case_id}")
+def delete_routing_evaluation(model_id: int, case_id: str) -> dict[str, Any]:
+    with get_db() as db:
+        deleted = db.execute("DELETE FROM routing_evaluations WHERE model_id = ? AND case_id = ?", (model_id, case_id)).rowcount
+    if not deleted:
+        raise HTTPException(404, "Evaluation not found.")
+    automatic_preparation.notify()
+    return {"deleted": True}
 
 
 @app.post("/api/models")

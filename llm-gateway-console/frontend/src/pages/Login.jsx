@@ -35,8 +35,8 @@ export function Login({ onLogin }) {
           <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-primary text-primary-foreground">
             <Workflow className="h-5 w-5" />
           </div>
-          <h1 className="text-2xl font-semibold tracking-tight">LLM Gateway</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Sign in to manage providers, keys, models, and logs.</p>
+          <h1 className="text-2xl font-semibold tracking-tight">Router Console</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Manage AI nodes, model inventory, routing, and application access.</p>
         </div>
 
         <form className="grid gap-4 p-6" onSubmit={submit}>
@@ -61,7 +61,7 @@ export function Login({ onLogin }) {
           </Label>
 
           {error && (
-            <div className="rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            <div role="alert" className="rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {error}
             </div>
           )}

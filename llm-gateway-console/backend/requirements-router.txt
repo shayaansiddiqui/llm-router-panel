@@ -1,0 +1,3 @@
+-r requirements.txt
+# Compatibility entry point. Routing dependencies are included in the normal
+# server installation; no separate router dependency installation is required.
